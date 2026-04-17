@@ -1,34 +1,228 @@
-import { useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+
+const QUICK_PROMPTS = [
+  "Deep brain stimulation for Parkinson's disease",
+  "Lung cancer immunotherapy latest evidence",
+  "Can I take Vitamin D in breast cancer?",
+  "Diabetes metformin clinical trials",
+  "Drug safety of levodopa in Parkinson's disease",
+  "Alzheimer's disease biomarker trials"
+];
 
 function App() {
-  const [formData, setFormData] = useState({
-    patientName: "",
-    disease: "",
-    query: "",
-    location: ""
+  const [patientContext, setPatientContext] = useState({
+    patientName: "John",
+    disease: "Parkinson's disease",
+    location: "Toronto, Canada",
+    currentMedications: "Levodopa"
   });
 
-  const [followUpMessage, setFollowUpMessage] = useState("");
+  const [formData, setFormData] = useState({
+    patientName: "John",
+    disease: "Parkinson's disease",
+    query: "",
+    location: "Toronto, Canada"
+  });
+
   const [sessionId, setSessionId] = useState("");
   const [responseMessage, setResponseMessage] = useState("");
   const [expandedQueries, setExpandedQueries] = useState([]);
   const [structuredResponse, setStructuredResponse] = useState(null);
   const [usedContext, setUsedContext] = useState(null);
-  const [chatHistory, setChatHistory] = useState([]);
   const [finalProcessedQuery, setFinalProcessedQuery] = useState("");
+  const [followUpMessage, setFollowUpMessage] = useState("");
+  const [chatHistory, setChatHistory] = useState([]);
+  const [uiState, setUiState] = useState("empty");
+  const [activeTab, setActiveTab] = useState("analysis");
+  const [pipelineStep, setPipelineStep] = useState(0);
+  const [pipelineLogs, setPipelineLogs] = useState([]);
+  const [showContextBar, setShowContextBar] = useState(true);
+  const [savedPatients, setSavedPatients] = useState([]);
+  const [selectedPatient, setSelectedPatient] = useState("");
 
-  const publicationsRef = useRef(null);
+  const pipelineTimerRef = useRef(null);
 
-  const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
+  useEffect(() => {
+    fetchSavedPatients();
+  }, []);
+
+  const stats = structuredResponse?.retrievalStats || {
+    openAlexRetrieved: 0,
+    pubmedRetrieved: 0,
+    clinicalTrialsRetrieved: 0,
+    openAlexShown: 0,
+    pubmedShown: 0,
+    clinicalTrialsShown: 0
+  };
+
+  const allPapers = useMemo(() => {
+    return [
+      ...(structuredResponse?.publications || []),
+      ...(structuredResponse?.pubmedPublications || [])
+    ];
+  }, [structuredResponse]);
+
+  const allTrials = useMemo(() => {
+    return structuredResponse?.clinicalTrials || [];
+  }, [structuredResponse]);
+
+  const allEvidenceCounts = useMemo(() => {
+    return {
+      papers: allPapers.length,
+      trials: allTrials.length
+    };
+  }, [allPapers, allTrials]);
+
+  const fetchSavedPatients = async () => {
+    try {
+      const res = await fetch("http://localhost:5000/patients");
+      const data = await res.json();
+      if (data.success) {
+        setSavedPatients(data.patients || []);
+      }
+    } catch (error) {
+      console.error("Failed to load saved patients:", error);
+    }
+  };
+
+  const handleSaveContext = async () => {
+  try {
+    const res = await fetch("http://localhost:5000/patients/save", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(patientContext)
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      alert("Unable to save patient context right now. Please check backend connection and MongoDB Atlas.");
+      return;
+    }
+
+    await fetchSavedPatients();
+    alert("Patient context saved successfully");
+  } catch (error) {
+    console.error(error);
+    alert("Unable to save patient context right now. Please check backend connection and MongoDB Atlas.");
+  }
+};
+      
+
+  
+
+  const loadPatientHistory = async (patientName) => {
+    try {
+      const res = await fetch(
+        `http://localhost:5000/patients/${encodeURIComponent(patientName)}/history`
+      );
+      const data = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "Failed to load history");
+      }
+
+      const sessions = data.sessions || [];
+
+      if (sessions.length > 0) {
+        const latest = sessions[0];
+
+        setSessionId(latest._id || "");
+        setChatHistory(
+          (latest.messages || []).map((msg) => ({
+            role: msg.role,
+            content: msg.content
+          }))
+        );
+
+        setPatientContext((prev) => ({
+          ...prev,
+          patientName: latest.patientName || prev.patientName,
+          disease: latest.activeCondition || prev.disease,
+          location: latest.activeLocation || prev.location
+        }));
+
+        setFormData((prev) => ({
+          ...prev,
+          patientName: latest.patientName || prev.patientName,
+          disease: latest.activeCondition || prev.disease,
+          location: latest.activeLocation || prev.location
+        }));
+
+        setUiState("results");
+      }
+    } catch (error) {
+      console.error("Load history error:", error);
+    }
+  };
+
+  const handlePatientContextChange = (e) => {
+    const { name, value } = e.target;
+    setPatientContext((prev) => ({
+      ...prev,
+      [name]: value
+    }));
+    setFormData((prev) => {
+      const next = { ...prev };
+      if (name === "patientName") next.patientName = value;
+      if (name === "disease") next.disease = value;
+      if (name === "location") next.location = value;
+      return next;
     });
   };
 
-  const runSearch = async (payload, userMessage) => {
+  const handleComposerChange = (e) => {
+    setFormData((prev) => ({
+      ...prev,
+      query: e.target.value
+    }));
+  };
+
+  const simulatePipeline = (queryText) => {
+    const diseaseLabel = patientContext.disease || formData.disease || "current condition";
+    const locationLabel = patientContext.location || formData.location || "current location";
+
+    const logs = [
+      `Expanding query for "${queryText}"...`,
+      `Context-aware reformulation using disease: ${diseaseLabel}`,
+      `Fetching evidence from PubMed + OpenAlex + ClinicalTrials.gov...`,
+      `Applying location-aware refinement for ${locationLabel}...`,
+      `Ranking results by relevance, recency, and source quality...`,
+      `Selecting top papers and clinical trials...`,
+      `Generating structured analysis and safety summary...`,
+      `Preparing evidence workspace...`
+    ];
+
+    setPipelineStep(0);
+    setPipelineLogs([]);
+
+    let i = 0;
+    pipelineTimerRef.current = setInterval(() => {
+      setPipelineStep(i + 1);
+      setPipelineLogs((prev) => [...prev, logs[i]]);
+      i += 1;
+      if (i >= logs.length) {
+        clearInterval(pipelineTimerRef.current);
+      }
+    }, 320);
+  };
+
+  const stopPipeline = () => {
+    if (pipelineTimerRef.current) {
+      clearInterval(pipelineTimerRef.current);
+      pipelineTimerRef.current = null;
+    }
+  };
+
+  const runSearch = async (payload, userMessage, isFollowUp = false) => {
     try {
+      setUiState("loading");
+      setActiveTab("analysis");
+      simulatePipeline(userMessage);
+
       const response = await fetch("http://localhost:5000/research", {
         method: "POST",
         headers: {
@@ -38,1034 +232,1854 @@ function App() {
       });
 
       const data = await response.json();
+      stopPipeline();
 
-      setResponseMessage(data.message);
+      if (!response.ok) {
+        throw new Error(data.message || "Backend request failed");
+      }
+
+      setResponseMessage(data.message || "");
       setSessionId(data.sessionId || "");
       setExpandedQueries(data.expandedQueries || []);
       setStructuredResponse(data.structuredResponse || null);
       setUsedContext(data.usedContext || null);
-      setFinalProcessedQuery(data.finalProcessedQuery || data.usedContext?.query || "");
+      setFinalProcessedQuery(
+        data.finalProcessedQuery || data.usedContext?.query || payload.query || ""
+      );
 
-      const assistantMessage =
-        data.structuredResponse?.researchInsights || "No response generated.";
+      const assistantSummary = [
+        data.structuredResponse?.conditionOverview,
+        data.structuredResponse?.researchInsights,
+        data.structuredResponse?.clinicalTrialSignals,
+        data.structuredResponse?.safetyNote
+      ]
+        .filter(Boolean)
+        .join(" ");
 
       setChatHistory((prev) => [
         ...prev,
-        { role: "user", content: userMessage },
-        { role: "assistant", content: assistantMessage }
+        { role: "user", content: userMessage, kind: isFollowUp ? "follow-up" : "initial" },
+        { role: "assistant", content: assistantSummary || "No structured response generated." }
       ]);
 
-      setTimeout(() => {
-        publicationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 250);
+      await fetchSavedPatients();
+      setUiState("results");
     } catch (error) {
-      console.error("Error:", error);
-      setResponseMessage("Failed to send data to backend");
+      stopPipeline();
+      console.error("Frontend fetch error:", error);
+      setResponseMessage(error.message || "Failed to fetch results");
+      setStructuredResponse(null);
+      setUiState("results");
     }
   };
 
-  const handleInitialSubmit = async (e) => {
-    e.preventDefault();
+  const handleInitialSearch = async () => {
+    if (!formData.query.trim()) return;
 
-    const userMessage = `Patient: ${formData.patientName || "N/A"}, Disease: ${
-      formData.disease || "N/A"
-    }, Query: ${formData.query || "N/A"}, Location: ${formData.location || "N/A"}`;
+    const userMessage = formData.query.trim();
 
     await runSearch(
       {
         sessionId,
-        ...formData
+        patientName: patientContext.patientName,
+        disease: patientContext.disease,
+        query: formData.query.trim(),
+        location: patientContext.location
       },
-      userMessage
+      userMessage,
+      false
     );
+
+    setFormData((prev) => ({
+      ...prev,
+      query: ""
+    }));
   };
 
-  const handleFollowUpSubmit = async (e) => {
-    e.preventDefault();
-    if (!followUpMessage.trim()) return;
+  const handleFollowUpSubmit = async () => {
+    if (!followUpMessage.trim() || !sessionId) return;
 
     const currentFollowUp = followUpMessage.trim();
 
     await runSearch(
       {
         sessionId,
-        patientName: formData.patientName,
+        patientName: patientContext.patientName,
         disease: "",
         query: "",
         location: "",
         followUpMessage: currentFollowUp
       },
-      currentFollowUp
+      currentFollowUp,
+      true
     );
 
     setFollowUpMessage("");
   };
 
-  const scrollToPublications = () => {
-    publicationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const handlePromptClick = (prompt) => {
+    setFormData((prev) => ({
+      ...prev,
+      query: prompt
+    }));
   };
+
+  const renderEmptyState = () => (
+    <motion.div
+      initial={{ opacity: 0, y: 18 }}
+      animate={{ opacity: 1, y: 0 }}
+      style={emptyStateWrap}
+    >
+      <div style={brandIconWrap}>
+        <div style={brandIconGlow} />
+        <div style={brandIcon}>✣</div>
+      </div>
+
+      <h1 style={emptyTitle}>MedResearchAI</h1>
+      <p style={emptySubtitle}>
+        Powered by a premium research workflow over PubMed, OpenAlex, and ClinicalTrials.gov.
+        Context-aware evidence retrieval, ranking, follow-ups, and structured medical insight generation.
+      </p>
+
+      <div style={quickSearchTitle}>Quick Searches</div>
+      <div style={quickPromptGrid}>
+        {QUICK_PROMPTS.map((prompt) => (
+          <button
+            key={prompt}
+            style={quickPromptBtn}
+            onClick={() => handlePromptClick(prompt)}
+          >
+            {prompt}
+          </button>
+        ))}
+      </div>
+    </motion.div>
+  );
+
+  const renderPipeline = () => {
+    const progress = Math.min((pipelineStep / 8) * 100, 100);
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        style={pipelineCard}
+      >
+        <div style={pipelineHeaderRow}>
+          <div style={pipelineAvatar}>✣</div>
+          <div style={{ flex: 1 }}>
+            <div style={pipelineTitle}>LIVE PIPELINE</div>
+            <div style={progressBarWrap}>
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${progress}%` }}
+                transition={{ duration: 0.25 }}
+                style={progressBar}
+              />
+            </div>
+          </div>
+          <div style={progressText}>{Math.round(progress)}%</div>
+        </div>
+
+        <div style={pipelineLogWrap}>
+          {pipelineLogs.map((log, idx) => (
+            <motion.div
+              key={`${log}-${idx}`}
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              style={pipelineLogLine}
+            >
+              <span style={pipelineDot}>◉</span>
+              <span>{log}</span>
+            </motion.div>
+          ))}
+          {pipelineLogs.length === 0 && (
+            <div style={pipelineMuted}>Initializing retrieval pipeline...</div>
+          )}
+        </div>
+      </motion.div>
+    );
+  };
+
+  const renderResults = () => (
+    <motion.div
+      initial={{ opacity: 0, y: 18 }}
+      animate={{ opacity: 1, y: 0 }}
+      style={resultsWrap}
+    >
+      <div style={queryBubbleWrap}>
+        <div style={queryBubble}>
+          {chatHistory.length > 0
+            ? chatHistory[chatHistory.length - 2]?.content || finalProcessedQuery
+            : finalProcessedQuery}
+        </div>
+        <div style={userMiniAvatar}>◌</div>
+      </div>
+
+      {responseMessage && !structuredResponse && (
+        <div style={errorBanner}>{responseMessage}</div>
+      )}
+
+      <div style={workspaceCard}>
+        <div style={workspaceTopRow}>
+          <div style={assistantMiniAvatar}>✣</div>
+
+          <div style={tabsWrap}>
+            <TabButton
+              label="Analysis"
+              active={activeTab === "analysis"}
+              onClick={() => setActiveTab("analysis")}
+            />
+            <TabButton
+              label="Papers"
+              active={activeTab === "papers"}
+              onClick={() => setActiveTab("papers")}
+              badge={allEvidenceCounts.papers}
+            />
+            <TabButton
+              label="Trials"
+              active={activeTab === "trials"}
+              onClick={() => setActiveTab("trials")}
+              badge={allEvidenceCounts.trials}
+            />
+            <TabButton
+              label="Analytics"
+              active={activeTab === "analytics"}
+              onClick={() => setActiveTab("analytics")}
+            />
+          </div>
+        </div>
+
+        <div style={tabBody}>
+          {activeTab === "analysis" && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.35 }}
+              style={analysisPremiumWrap}
+            >
+              <div style={analysisHeroCard}>
+                <div style={analysisHeroGlow} />
+                <div style={analysisHeroContent}>
+                  <div style={analysisHeroTop}>
+                    <div>
+                      <div style={analysisEyebrow}>Research Summary</div>
+                      <div style={analysisHeroTitle}>
+                        Context-aware evidence synthesis for{" "}
+                        {usedContext?.disease || patientContext.disease || "the selected condition"}
+                      </div>
+                    </div>
+
+                    <div style={analysisConfidencePill}>
+                      <span style={analysisConfidenceDot} />
+                      Evidence Ready
+                    </div>
+                  </div>
+
+                  <div style={analysisStatsRow}>
+                    <div style={analysisMiniStat}>
+                      <div style={analysisMiniStatValue}>{allEvidenceCounts.papers}</div>
+                      <div style={analysisMiniStatLabel}>Publications</div>
+                    </div>
+                    <div style={analysisMiniStat}>
+                      <div style={analysisMiniStatValue}>{allEvidenceCounts.trials}</div>
+                      <div style={analysisMiniStatLabel}>Clinical Trials</div>
+                    </div>
+                    <div style={analysisMiniStat}>
+                      <div style={analysisMiniStatValue}>{expandedQueries?.length || 0}</div>
+                      <div style={analysisMiniStatLabel}>Expanded Queries</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={analysisPremiumGrid}>
+                <motion.div
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.05 }}
+                  style={analysisGlassCard}
+                >
+                  <div style={analysisCardIcon}>◎</div>
+                  <div style={analysisCardTitle}>Condition Overview</div>
+                  <div style={analysisCardText}>
+                    {structuredResponse?.conditionOverview || "No content available."}
+                  </div>
+                </motion.div>
+
+                <motion.div
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.12 }}
+                  style={analysisGlassCard}
+                >
+                  <div style={analysisCardIcon}>✦</div>
+                  <div style={analysisCardTitle}>Key Research Insights</div>
+                  <div style={analysisCardText}>
+                    {structuredResponse?.researchInsights || "No content available."}
+                  </div>
+                </motion.div>
+
+                <motion.div
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.19 }}
+                  style={analysisGlassCard}
+                >
+                  <div style={analysisCardIcon}>◌</div>
+                  <div style={analysisCardTitle}>Clinical Trial Highlights</div>
+                  <div style={analysisCardText}>
+                    {structuredResponse?.clinicalTrialSignals || "No content available."}
+                  </div>
+                </motion.div>
+
+                <motion.div
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.26 }}
+                  style={analysisGlassCard}
+                >
+                  <div style={analysisCardIcon}>⚕</div>
+                  <div style={analysisCardTitle}>Safety Note</div>
+                  <div style={analysisCardText}>
+                    {structuredResponse?.safetyNote || "No content available."}
+                  </div>
+                </motion.div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === "papers" && (
+            <div style={cardGrid}>
+              {allPapers.map((paper, idx) => (
+                <PremiumPaperCard key={paper.id || idx} paper={paper} />
+              ))}
+              {allPapers.length === 0 && (
+                <EmptyTabState text="No papers found for this query." />
+              )}
+            </div>
+          )}
+
+          {activeTab === "trials" && (
+            <div style={cardGrid}>
+              {allTrials.map((trial, idx) => (
+                <PremiumTrialCard key={trial.id || idx} trial={trial} />
+              ))}
+              {allTrials.length === 0 && (
+                <EmptyTabState text="No clinical trials found for this query." />
+              )}
+            </div>
+          )}
+
+          {activeTab === "analytics" && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.35 }}
+              style={premiumAnalyticsWrap}
+            >
+              <div style={analyticsHeroCard}>
+                <div style={analyticsHeroGlow} />
+                <div style={analyticsHeroContent}>
+                  <div style={analyticsHeroTop}>
+                    <div>
+                      <div style={analyticsEyebrow}>Evidence Intelligence</div>
+                      <div style={analyticsHeroTitle}>
+                        Real-time research quality snapshot
+                      </div>
+                      <div style={analyticsHeroSubtitle}>
+                        A premium overview of publication depth, trial coverage, and query expansion activity.
+                      </div>
+                    </div>
+
+                    <div style={analyticsBadgeGroup}>
+                      <div style={analyticsBadgeBlue}>OpenAlex {stats.openAlexShown}</div>
+                      <div style={analyticsBadgeCyan}>PubMed {stats.pubmedShown}</div>
+                      <div style={analyticsBadgePurple}>Trials {stats.clinicalTrialsShown}</div>
+                    </div>
+                  </div>
+
+                  <div style={premiumPulseRow}>
+                    <SignalOrb
+                      label="OpenAlex"
+                      value={stats.openAlexShown}
+                      total={Math.max(stats.openAlexRetrieved, 1)}
+                      tone="blue"
+                    />
+                    <SignalOrb
+                      label="PubMed"
+                      value={stats.pubmedShown}
+                      total={Math.max(stats.pubmedRetrieved, 1)}
+                      tone="cyan"
+                    />
+                    <SignalOrb
+                      label="Trials"
+                      value={stats.clinicalTrialsShown}
+                      total={Math.max(stats.clinicalTrialsRetrieved, 1)}
+                      tone="purple"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div style={analyticsInsightGrid}>
+                <MetricGlassCard
+                  title="OpenAlex Retrieved"
+                  value={stats.openAlexRetrieved}
+                  tone="green"
+                />
+                <MetricGlassCard
+                  title="PubMed Retrieved"
+                  value={stats.pubmedRetrieved}
+                  tone="amber"
+                />
+                <MetricGlassCard
+                  title="Trials Retrieved"
+                  value={stats.clinicalTrialsRetrieved}
+                  tone="red"
+                />
+                <MetricGlassCard
+                  title="OpenAlex Shown"
+                  value={stats.openAlexShown}
+                  tone="green"
+                />
+                <MetricGlassCard
+                  title="PubMed Shown"
+                  value={stats.pubmedShown}
+                  tone="amber"
+                />
+                <MetricGlassCard
+                  title="Trials Shown"
+                  value={stats.clinicalTrialsShown}
+                  tone="red"
+                />
+              </div>
+
+              <div style={analyticsQueryCard}>
+                <div style={analyticsQueryHeader}>
+                  <div style={analyticsQueryTitle}>Expanded Queries Used</div>
+                  <div style={analyticsQueryCount}>
+                    {(expandedQueries || []).length} variants
+                  </div>
+                </div>
+
+                <div style={analyticsQueryFlow}>
+                  {(expandedQueries || []).length > 0 ? (
+                    expandedQueries.map((q, index) => (
+                      <motion.div
+                        key={q}
+                        initial={{ opacity: 0, x: -14 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: index * 0.06 }}
+                        style={queryFlowItem}
+                      >
+                        <div style={queryFlowDot} />
+                        <div style={queryFlowText}>{q}</div>
+                      </motion.div>
+                    ))
+                  ) : (
+                    <div style={queryFlowEmpty}>No expanded queries available.</div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
 
   return (
     <div style={pageStyle}>
-      <div style={bgOrbOne} />
-      <div style={bgOrbTwo} />
-      <div style={bgGrid} />
+      <div style={bgGlowLeft} />
+      <div style={bgGlowRight} />
+      <div style={bgGlowCenter} />
 
-      <motion.section
-        initial={{ opacity: 0, y: 28 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7 }}
-        style={heroWrap}
-      >
-        <div style={heroLeft}>
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05 }}
-            style={miniBadge}
-          >
-            Premium Medical Intelligence Workspace
-          </motion.div>
-
-          <motion.h1
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.12 }}
-            style={heroTitle}
-          >
-            Research-grade medical discovery with premium evidence visualization.
-          </motion.h1>
-
-          <motion.p
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            style={heroSubtitle}
-          >
-            CuraLink transforms condition-specific questions into ranked publications,
-            clinical trial signals, follow-up memory, and structured research summaries.
-          </motion.p>
-
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.28 }}
-            style={heroActions}
-          >
-            <button style={primaryHeroBtn} onClick={scrollToPublications}>
-              Explore Publications
-            </button>
+      <div style={appShell}>
+        <aside style={sidebarStyle}>
+          <div style={sidebarTop}>
+            <button style={menuBtn}>☰</button>
             <button
-              style={secondaryHeroBtn}
-              onClick={() =>
-                window.scrollTo({
-                  top: 680,
-                  behavior: "smooth"
-                })
-              }
-            >
-              Start Search
-            </button>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.36 }}
-            style={heroStats}
-          >
-            <div style={heroStatCard}>
-              <div style={heroStatValue}>
-                {structuredResponse?.retrievalStats?.openAlexRetrieved ?? "—"}
-              </div>
-              <div style={heroStatLabel}>OpenAlex</div>
-            </div>
-            <div style={heroStatCard}>
-              <div style={heroStatValue}>
-                {structuredResponse?.retrievalStats?.pubmedRetrieved ?? "—"}
-              </div>
-              <div style={heroStatLabel}>PubMed</div>
-            </div>
-            <div style={heroStatCard}>
-              <div style={heroStatValue}>
-                {structuredResponse?.retrievalStats?.clinicalTrialsRetrieved ?? "—"}
-              </div>
-              <div style={heroStatLabel}>Trials</div>
-            </div>
-          </motion.div>
-        </div>
-
-        <motion.div
-          initial={{ opacity: 0, x: 24 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.18, duration: 0.7 }}
-          style={heroRight}
-        >
-          <div style={premiumPanel}>
-            <div style={premiumPanelTop}>
-              <div style={tinyDots}>
-                <span style={dotPink} />
-                <span style={dotBlue} />
-                <span style={dotGreen} />
-              </div>
-              <div style={topLabel}>Live Research Dashboard</div>
-            </div>
-
-            <div style={reportHeadline}>Clinical Evidence Sheet</div>
-
-            <div style={reportRows}>
-              <div style={reportRow}>
-                <span style={reportKey}>Condition</span>
-                <span style={reportVal}>{formData.disease || "Awaiting selection"}</span>
-              </div>
-              <div style={reportRow}>
-                <span style={reportKey}>Topic</span>
-                <span style={reportVal}>{formData.query || "Awaiting selection"}</span>
-              </div>
-              <div style={reportRow}>
-                <span style={reportKey}>Location</span>
-                <span style={reportVal}>{formData.location || "Optional"}</span>
-              </div>
-              <div style={reportRow}>
-                <span style={reportKey}>Session</span>
-                <span style={reportVal}>{sessionId ? "Active" : "New"}</span>
-              </div>
-            </div>
-
-            <div style={analyticsWrap}>
-              <motion.div
-                animate={{ height: [48, 88, 64, 110, 72] }}
-                transition={{ duration: 4, repeat: Infinity }}
-                style={barOne}
-              />
-              <motion.div
-                animate={{ height: [78, 52, 100, 68, 84] }}
-                transition={{ duration: 3.5, repeat: Infinity }}
-                style={barTwo}
-              />
-              <motion.div
-                animate={{ height: [58, 108, 70, 92, 60] }}
-                transition={{ duration: 4.2, repeat: Infinity }}
-                style={barThree}
-              />
-              <motion.div
-                animate={{ height: [92, 60, 80, 120, 76] }}
-                transition={{ duration: 3.8, repeat: Infinity }}
-                style={barFour}
-              />
-            </div>
-
-            <motion.div
-              animate={{ opacity: [0.7, 1, 0.7] }}
-              transition={{ duration: 2.2, repeat: Infinity }}
-              style={smartIndicator}
-            >
-              Structured answers guide you to the publication sections below
-            </motion.div>
-          </div>
-        </motion.div>
-      </motion.section>
-
-      <motion.form
-        onSubmit={handleInitialSubmit}
-        initial={{ opacity: 0, y: 26 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
-        style={searchCard}
-      >
-        <div style={cardHeaderRow}>
-          <div>
-            <div style={cardEyebrow}>Search Intake</div>
-            <h2 style={cardTitle}>Start a New Research Run</h2>
-          </div>
-          <div style={statusPill}>{sessionId ? "Session Active" : "Ready"}</div>
-        </div>
-
-        <div style={inputGrid}>
-          <input
-            type="text"
-            name="patientName"
-            placeholder="Patient Name"
-            value={formData.patientName}
-            onChange={handleChange}
-            style={inputStyle}
-          />
-          <input
-            type="text"
-            name="disease"
-            placeholder="Disease of Interest"
-            value={formData.disease}
-            onChange={handleChange}
-            style={inputStyle}
-          />
-          <input
-            type="text"
-            name="query"
-            placeholder="Additional Query / Treatment / Supplement"
-            value={formData.query}
-            onChange={handleChange}
-            style={inputStyle}
-          />
-          <input
-            type="text"
-            name="location"
-            placeholder="Location (Optional)"
-            value={formData.location}
-            onChange={handleChange}
-            style={inputStyle}
-          />
-        </div>
-
-        <button type="submit" style={primaryFullBtn}>
-          Launch Research Workflow
-        </button>
-
-        {responseMessage && (
-          <div style={successBanner}>
-            {responseMessage}
-          </div>
-        )}
-      </motion.form>
-
-      {sessionId && (
-        <div style={glassCard}>
-          <div style={cardHeaderRow}>
-            <div>
-              <div style={cardEyebrow}>Memory</div>
-              <h2 style={cardTitle}>Session Memory</h2>
-            </div>
-          </div>
-          <p><strong>Session ID:</strong> {sessionId}</p>
-        </div>
-      )}
-
-      {usedContext && (
-        <div style={glassCard}>
-          <div style={cardHeaderRow}>
-            <div>
-              <div style={cardEyebrow}>Context</div>
-              <h2 style={cardTitle}>Context Used For Current Search</h2>
-            </div>
-          </div>
-          <div style={detailsGrid}>
-            <div style={detailTile}>
-              <span style={detailLabel}>Disease</span>
-              <span style={detailValue}>{usedContext.disease || "N/A"}</span>
-            </div>
-            <div style={detailTile}>
-              <span style={detailLabel}>Query</span>
-              <span style={detailValue}>{usedContext.query || "N/A"}</span>
-            </div>
-            <div style={detailTile}>
-              <span style={detailLabel}>Location</span>
-              <span style={detailValue}>{usedContext.location || "N/A"}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {finalProcessedQuery && (
-        <div style={glassCard}>
-          <div style={cardEyebrow}>Processed Query</div>
-          <h2 style={cardTitle}>Final Query Sent to Retrieval</h2>
-          <p style={highlightText}>{finalProcessedQuery}</p>
-        </div>
-      )}
-
-      {chatHistory.length > 0 && (
-        <div style={glassCard}>
-          <div style={cardEyebrow}>Conversation</div>
-          <h2 style={cardTitle}>Research Dialogue</h2>
-          {chatHistory.map((msg, index) => (
-            <motion.div
-              key={index}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              style={{
-                ...chatBubble,
-                background:
-                  msg.role === "user"
-                    ? "linear-gradient(180deg, rgba(42,62,104,0.95), rgba(29,45,78,0.95))"
-                    : "linear-gradient(180deg, rgba(11,25,54,0.95), rgba(9,18,39,0.95))"
+              style={newSessionBtn}
+              onClick={() => {
+                setSessionId("");
+                setStructuredResponse(null);
+                setExpandedQueries([]);
+                setUsedContext(null);
+                setFinalProcessedQuery("");
+                setChatHistory([]);
+                setUiState("empty");
+                setResponseMessage("");
               }}
             >
-              <div style={chatRole}>
-                {msg.role === "user" ? "User" : "Assistant"}
-              </div>
-              <div style={chatText}>{msg.content}</div>
-            </motion.div>
-          ))}
-        </div>
-      )}
+              ＋ New session
+            </button>
+          </div>
 
-      {sessionId && (
-        <form
-          onSubmit={handleFollowUpSubmit}
-          style={glassCard}
-        >
-          <div style={cardHeaderRow}>
-            <div>
-              <div style={cardEyebrow}>Follow-up</div>
-              <h2 style={cardTitle}>Continue the Research Conversation</h2>
+          <div style={sidebarSectionLabel}>Saved Patients</div>
+          <div style={sessionListWrap}>
+            {savedPatients.length === 0 ? (
+              <div style={emptySessionText}>No saved patients yet</div>
+            ) : (
+              savedPatients.map((patient) => (
+                <div
+                  key={patient._id}
+                  style={{
+                    ...sessionCard,
+                    border:
+                      selectedPatient === patient.patientName
+                        ? "1px solid rgba(61,125,255,0.65)"
+                        : sessionCard.border
+                  }}
+                  onClick={() => {
+                    setSelectedPatient(patient.patientName);
+                    loadPatientHistory(patient.patientName);
+                  }}
+                >
+                  <div style={sessionCardTitle}>{patient.patientName}</div>
+                  <div style={sessionCardSubtitle}>
+                    {patient.disease || "No disease saved"}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <main style={mainArea}>
+          <header style={topbarStyle}>
+            <div style={brandRow}>
+              <div style={topLogo}>✣</div>
+              <div>
+                <div style={brandName}>MedResearchAI</div>
+                <div style={brandMeta}>MERN · PubMed · OpenAlex · ClinicalTrials</div>
+              </div>
+            </div>
+
+            <div style={topbarActions}>
+              <span style={sourceBadge}>PubMed</span>
+              <span style={sourceBadge}>OpenAlex</span>
+              <span style={sourceBadge}>Trials</span>
+              {usedContext?.disease && <span style={diseaseChip}>{usedContext.disease}</span>}
+              <button style={topbarBtn}>Edit Context</button>
+            </div>
+          </header>
+
+          <AnimatePresence>
+            {showContextBar && (
+              <motion.div
+                initial={{ opacity: 0, y: -12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                style={contextBar}
+              >
+                <div style={contextBarHeader}>
+                  <div style={contextBarTitle}>Patient Context</div>
+                  <button style={contextCloseBtn} onClick={() => setShowContextBar(false)}>
+                    ×
+                  </button>
+                </div>
+
+                <div style={contextGrid}>
+                  <input
+                    name="patientName"
+                    value={patientContext.patientName}
+                    onChange={handlePatientContextChange}
+                    placeholder="Patient name"
+                    style={contextInput}
+                  />
+                  <input
+                    name="disease"
+                    value={patientContext.disease}
+                    onChange={handlePatientContextChange}
+                    placeholder="Disease / condition"
+                    style={contextInput}
+                  />
+                  <input
+                    name="location"
+                    value={patientContext.location}
+                    onChange={handlePatientContextChange}
+                    placeholder="Location"
+                    style={contextInput}
+                  />
+                  <input
+                    name="currentMedications"
+                    value={patientContext.currentMedications}
+                    onChange={handlePatientContextChange}
+                    placeholder="Current medications"
+                    style={contextInput}
+                  />
+                  <button style={saveContextBtn} onClick={handleSaveContext}>
+                    Save Context
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div style={contentArea}>
+            {uiState === "empty" && renderEmptyState()}
+            {uiState === "loading" && renderPipeline()}
+            {uiState === "results" && renderResults()}
+          </div>
+
+          <div style={composerDock}>
+            <div style={composerInner}>
+              <input
+                value={sessionId ? followUpMessage : formData.query}
+                onChange={(e) => {
+                  if (sessionId) setFollowUpMessage(e.target.value);
+                  else handleComposerChange(e);
+                }}
+                placeholder="Ask about a disease, treatment, clinical trial, or drug interaction..."
+                style={composerInput}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (sessionId) handleFollowUpSubmit();
+                    else handleInitialSearch();
+                  }
+                }}
+              />
+              <button style={composerIconBtn}>◉</button>
+              <button
+                style={composerSendBtn}
+                onClick={() => {
+                  if (sessionId) handleFollowUpSubmit();
+                  else handleInitialSearch();
+                }}
+              >
+                ➤
+              </button>
+            </div>
+            <div style={disclaimer}>
+              For research purposes only · Not medical advice · Always consult a qualified healthcare professional
             </div>
           </div>
-          <input
-            type="text"
-            placeholder='Example: "Can I take Vitamin D?"'
-            value={followUpMessage}
-            onChange={(e) => setFollowUpMessage(e.target.value)}
-            style={inputStyle}
-          />
-          <button type="submit" style={primaryFullBtn}>
-            Ask Follow-up Question
-          </button>
-        </form>
-      )}
-
-      {structuredResponse?.retrievalStats && (
-        <div style={glassCard}>
-          <div style={cardEyebrow}>Analytics</div>
-          <h2 style={cardTitle}>Retrieval Summary</h2>
-          <div style={statsGrid}>
-            <Stat title="OpenAlex Retrieved" value={structuredResponse.retrievalStats.openAlexRetrieved} />
-            <Stat title="PubMed Retrieved" value={structuredResponse.retrievalStats.pubmedRetrieved} />
-            <Stat title="Trials Retrieved" value={structuredResponse.retrievalStats.clinicalTrialsRetrieved} />
-            <Stat title="OpenAlex Shown" value={structuredResponse.retrievalStats.openAlexShown} />
-            <Stat title="PubMed Shown" value={structuredResponse.retrievalStats.pubmedShown} />
-            <Stat title="Trials Shown" value={structuredResponse.retrievalStats.clinicalTrialsShown} />
-          </div>
-        </div>
-      )}
-
-      {structuredResponse && (
-        <>
-          <InsightCard
-            eyebrow="Summary"
-            title="Condition Overview"
-            content={structuredResponse.conditionOverview}
-          />
-          <InsightCard
-            eyebrow="Insights"
-            title="Research Insights"
-            content={structuredResponse.researchInsights}
-          />
-          <InsightCard
-            eyebrow="Trials"
-            title="Clinical Trial Signals"
-            content={structuredResponse.clinicalTrialSignals}
-          />
-          <InsightCard
-            eyebrow="Safety"
-            title="Safety Note"
-            content={structuredResponse.safetyNote}
-          />
-
-          <div ref={publicationsRef} style={glassCard}>
-            <div style={cardEyebrow}>Publications</div>
-            <h2 style={cardTitle}>Top OpenAlex Publications</h2>
-            {structuredResponse.publications?.length > 0 ? (
-              structuredResponse.publications.map((pub, index) => (
-                <ResultCard
-                  key={pub.id || index}
-                  title={pub.title}
-                  meta={[
-                    ["Authors", pub.authors?.join(", ") || "N/A"],
-                    ["Year", pub.year],
-                    ["Platform", pub.source],
-                    ["Score", pub.score]
-                  ]}
-                  url={pub.url}
-                  urlLabel="Open Paper"
-                />
-              ))
-            ) : (
-              <p>No OpenAlex publications found.</p>
-            )}
-          </div>
-
-          <div style={glassCard}>
-            <div style={cardEyebrow}>Publications</div>
-            <h2 style={cardTitle}>Top PubMed Publications</h2>
-            {structuredResponse.pubmedPublications?.length > 0 ? (
-              structuredResponse.pubmedPublications.map((pub, index) => (
-                <ResultCard
-                  key={pub.id || index}
-                  title={pub.title}
-                  meta={[
-                    ["Authors", pub.authors?.join(", ") || "N/A"],
-                    ["Year", pub.year],
-                    ["Platform", pub.source],
-                    ["Score", pub.score]
-                  ]}
-                  url={pub.url}
-                  urlLabel="Open Publication"
-                />
-              ))
-            ) : (
-              <p>No PubMed publications found.</p>
-            )}
-          </div>
-
-          <div style={glassCard}>
-            <div style={cardEyebrow}>Trials</div>
-            <h2 style={cardTitle}>Top Clinical Trials</h2>
-            {structuredResponse.clinicalTrials?.length > 0 ? (
-              structuredResponse.clinicalTrials.map((trial, index) => (
-                <ResultCard
-                  key={trial.id || index}
-                  title={trial.title}
-                  meta={[
-                    ["Status", trial.status],
-                    ["Phase", trial.phase],
-                    ["Condition", trial.condition?.join(", ") || "N/A"],
-                    ["Intervention", trial.intervention?.join(", ") || "N/A"],
-                    ["Location", trial.location || "N/A"],
-                    ["Platform", trial.source],
-                    ["Score", trial.score]
-                  ]}
-                  url={trial.url}
-                  urlLabel="Open Trial"
-                />
-              ))
-            ) : (
-              <p>No clinical trials found.</p>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Stat({ title, value }) {
-  return (
-    <div style={statCard}>
-      <div style={statTitle}>{title}</div>
-      <div style={statNumber}>{value}</div>
-    </div>
-  );
-}
-
-function InsightCard({ eyebrow, title, content }) {
-  return (
-    <div style={glassCard}>
-      <div style={cardEyebrow}>{eyebrow}</div>
-      <h2 style={cardTitle}>{title}</h2>
-      <p style={{ lineHeight: 1.7, color: "#dce8ff" }}>{content}</p>
-    </div>
-  );
-}
-
-function ResultCard({ title, meta, url, urlLabel }) {
-  return (
-    <motion.div
-      whileHover={{ y: -4, scale: 1.01 }}
-      transition={{ duration: 0.18 }}
-      style={resultCard}
-    >
-      <h3 style={resultTitle}>{title}</h3>
-      <div style={resultMetaGrid}>
-        {meta.map(([label, value], index) => (
-          <div key={index} style={resultMetaTile}>
-            <div style={resultMetaLabel}>{label}</div>
-            <div style={resultMetaValue}>{value}</div>
-          </div>
-        ))}
+        </main>
       </div>
-      <a href={url} target="_blank" rel="noreferrer" style={resultLink}>
-        {urlLabel}
+    </div>
+  );
+}
+
+function TabButton({ label, active, onClick, badge }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...tabBtn,
+        color: active ? "#55a9ff" : "#7f95c8",
+        borderBottom: active ? "2px solid #2f8fff" : "2px solid transparent"
+      }}
+    >
+      {label}
+      {badge !== null && badge !== undefined && <span style={tabBadge}>{badge}</span>}
+    </button>
+  );
+}
+
+function PremiumPaperCard({ paper }) {
+  const authorText =
+    Array.isArray(paper.authors) && paper.authors.length > 0
+      ? paper.authors.join(", ")
+      : "Authors unavailable";
+
+  return (
+    <div style={evidenceCard}>
+      <div style={paperDetailGrid}>
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Title</span>
+          <span style={paperDetailValue}>{paper.title || "Untitled publication"}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Authors</span>
+          <span style={paperDetailValue}>{authorText}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Year</span>
+          <span style={paperDetailValue}>{paper.year || "N/A"}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Source</span>
+          <span style={paperDetailValue}>{paper.source || "N/A"}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Score</span>
+          <span style={paperDetailValue}>{paper.score ?? "N/A"}</span>
+        </div>
+      </div>
+
+      <a href={paper.url || "#"} target="_blank" rel="noreferrer" style={paperActionBtn}>
+        View publication ↗
       </a>
+    </div>
+  );
+}
+
+function PremiumTrialCard({ trial }) {
+  return (
+    <div style={evidenceCard}>
+      <div style={paperDetailGrid}>
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Title</span>
+          <span style={paperDetailValue}>{trial.title || "Untitled trial"}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Condition</span>
+          <span style={paperDetailValue}>
+            {Array.isArray(trial.condition) && trial.condition.length > 0
+              ? trial.condition.join(", ")
+              : "N/A"}
+          </span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Intervention</span>
+          <span style={paperDetailValue}>
+            {Array.isArray(trial.intervention) && trial.intervention.length > 0
+              ? trial.intervention.join(", ")
+              : "N/A"}
+          </span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Phase</span>
+          <span style={paperDetailValue}>{trial.phase || "N/A"}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Status</span>
+          <span style={paperDetailValue}>{trial.status || "N/A"}</span>
+        </div>
+
+        <div style={paperDetailRow}>
+          <span style={paperDetailLabel}>Location</span>
+          <span style={paperDetailValue}>{trial.location || "N/A"}</span>
+        </div>
+      </div>
+
+      <a href={trial.url || "#"} target="_blank" rel="noreferrer" style={paperActionBtn}>
+        View trial ↗
+      </a>
+    </div>
+  );
+}
+
+function SignalOrb({ label, value, total, tone = "blue" }) {
+  const pct = Math.max(12, Math.min(100, Math.round((value / total) * 100)));
+
+  const tones = {
+    blue: {
+      ring: `conic-gradient(#56b7ff 0deg, #56b7ff ${pct * 3.6}deg, rgba(255,255,255,0.08) 0deg)`,
+      glow: "0 0 30px rgba(86,183,255,0.18)",
+      core: "linear-gradient(180deg, rgba(60,138,255,0.20), rgba(18,39,80,0.25))"
+    },
+    cyan: {
+      ring: `conic-gradient(#41d6e8 0deg, #41d6e8 ${pct * 3.6}deg, rgba(255,255,255,0.08) 0deg)`,
+      glow: "0 0 30px rgba(65,214,232,0.18)",
+      core: "linear-gradient(180deg, rgba(65,214,232,0.20), rgba(18,39,80,0.25))"
+    },
+    purple: {
+      ring: `conic-gradient(#9a82ff 0deg, #9a82ff ${pct * 3.6}deg, rgba(255,255,255,0.08) 0deg)`,
+      glow: "0 0 30px rgba(154,130,255,0.18)",
+      core: "linear-gradient(180deg, rgba(154,130,255,0.20), rgba(18,39,80,0.25))"
+    }
+  };
+
+  const selected = tones[tone] || tones.blue;
+
+  return (
+    <motion.div whileHover={{ y: -4, scale: 1.02 }} style={signalOrbWrap}>
+      <div
+        style={{
+          ...signalOrbRing,
+          background: selected.ring,
+          boxShadow: selected.glow
+        }}
+      >
+        <div
+          style={{
+            ...signalOrbCore,
+            background: selected.core
+          }}
+        >
+          <motion.div
+            animate={{ opacity: [0.65, 1, 0.65] }}
+            transition={{ repeat: Infinity, duration: 2.2 }}
+            style={signalOrbValue}
+          >
+            {value}
+          </motion.div>
+        </div>
+      </div>
+
+      <div style={signalOrbLabel}>{label}</div>
+      <div style={signalOrbSubtext}>{pct}% visibility</div>
     </motion.div>
   );
 }
 
+function MetricGlassCard({ title, value, tone }) {
+  const colors = {
+    green: "#5fd6b3",
+    amber: "#8fd0ff",
+    red: "#b58cff",
+    blue: "#56b7ff"
+  };
+
+  const glows = {
+    green: "0 0 18px rgba(95,214,179,0.16)",
+    amber: "0 0 18px rgba(143,208,255,0.16)",
+    red: "0 0 18px rgba(181,140,255,0.16)",
+    blue: "0 0 18px rgba(86,183,255,0.16)"
+  };
+
+  const selectedColor = colors[tone] || colors.blue;
+  const selectedGlow = glows[tone] || glows.blue;
+
+  return (
+    <motion.div whileHover={{ y: -3 }} style={metricGlassCard}>
+      <div style={metricGlassTitle}>{title}</div>
+      <div
+        style={{
+          ...metricGlassValue,
+          color: selectedColor,
+          textShadow: selectedGlow
+        }}
+      >
+        {value}
+      </div>
+    </motion.div>
+  );
+}
+
+function EmptyTabState({ text }) {
+  return <div style={emptyTabState}>{text}</div>;
+}
+
 const pageStyle = {
   minHeight: "100vh",
-  background: "linear-gradient(180deg, #050b1c 0%, #07112b 100%)",
+  background: "linear-gradient(180deg, #020a18 0%, #041126 100%)",
   color: "white",
-  padding: "32px 20px 60px",
   fontFamily: "Inter, Arial, sans-serif",
   position: "relative",
   overflow: "hidden"
 };
 
-const bgOrbOne = {
+const bgGlowLeft = {
   position: "fixed",
-  left: "-120px",
-  top: "120px",
-  width: "340px",
-  height: "340px",
+  left: -120,
+  top: 120,
+  width: 320,
+  height: 320,
   borderRadius: "50%",
-  background: "radial-gradient(circle, rgba(114,92,255,0.22), transparent 70%)",
-  pointerEvents: "none",
-  filter: "blur(4px)"
+  background: "radial-gradient(circle, rgba(28,116,255,0.16), transparent 70%)",
+  pointerEvents: "none"
 };
 
-const bgOrbTwo = {
+const bgGlowRight = {
   position: "fixed",
-  right: "-100px",
-  top: "40px",
-  width: "360px",
-  height: "360px",
+  right: -140,
+  top: 20,
+  width: 380,
+  height: 380,
   borderRadius: "50%",
-  background: "radial-gradient(circle, rgba(56,189,248,0.18), transparent 70%)",
-  pointerEvents: "none",
-  filter: "blur(4px)"
+  background: "radial-gradient(circle, rgba(107,76,255,0.14), transparent 70%)",
+  pointerEvents: "none"
 };
 
-const bgGrid = {
+const bgGlowCenter = {
   position: "fixed",
-  inset: 0,
-  backgroundImage:
-    "linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)",
-  backgroundSize: "34px 34px",
-  pointerEvents: "none",
-  maskImage: "radial-gradient(circle at center, black 45%, transparent 95%)"
+  left: "42%",
+  top: "32%",
+  width: 420,
+  height: 420,
+  transform: "translate(-50%, -50%)",
+  borderRadius: "50%",
+  background: "radial-gradient(circle, rgba(0,195,255,0.08), transparent 70%)",
+  pointerEvents: "none"
 };
 
-const heroWrap = {
-  maxWidth: "1240px",
-  margin: "0 auto 28px",
+const appShell = {
   display: "grid",
-  gridTemplateColumns: "1.05fr 0.95fr",
-  gap: "26px",
-  alignItems: "center"
+  gridTemplateColumns: "300px 1fr",
+  minHeight: "100vh"
 };
 
-const heroLeft = {
+const sidebarStyle = {
+  borderRight: "1px solid rgba(255,255,255,0.06)",
+  background: "linear-gradient(180deg, rgba(5,20,44,0.94), rgba(3,14,34,0.98))",
+  padding: "16px 14px"
+};
+
+const sidebarTop = {
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  marginBottom: "22px"
+};
+
+const menuBtn = {
+  width: "34px",
+  height: "34px",
+  borderRadius: "10px",
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.03)",
+  color: "white",
+  cursor: "pointer"
+};
+
+const newSessionBtn = {
+  flex: 1,
+  padding: "12px 14px",
+  borderRadius: "12px",
+  border: "1px solid rgba(56,144,255,0.28)",
+  background: "linear-gradient(180deg, rgba(10,37,78,0.95), rgba(8,29,62,0.95))",
+  color: "#76b8ff",
+  fontWeight: 700,
+  cursor: "pointer",
+  textAlign: "left"
+};
+
+const sidebarSectionLabel = {
+  color: "#6f87b6",
+  fontSize: "12px",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  marginBottom: "10px"
+};
+
+const sessionListWrap = {
+  display: "grid",
+  gap: "10px"
+};
+
+const emptySessionText = {
+  color: "#6e81a8",
+  fontSize: "15px"
+};
+
+const sessionCard = {
+  padding: "14px 12px",
+  borderRadius: "14px",
+  background: "rgba(255,255,255,0.035)",
+  border: "1px solid rgba(255,255,255,0.05)",
+  cursor: "pointer"
+};
+
+const sessionCardTitle = {
+  fontWeight: 700,
+  marginBottom: "6px"
+};
+
+const sessionCardSubtitle = {
+  color: "#7f95c8",
+  fontSize: "13px"
+};
+
+const mainArea = {
   display: "flex",
   flexDirection: "column",
-  gap: "18px"
+  minWidth: 0
 };
 
-const heroRight = {
+const topbarStyle = {
+  height: "72px",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
   display: "flex",
-  justifyContent: "center"
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "0 22px",
+  background: "linear-gradient(180deg, rgba(8,21,48,0.94), rgba(7,18,40,0.95))",
+  position: "sticky",
+  top: 0,
+  zIndex: 20,
+  backdropFilter: "blur(10px)"
 };
 
-const miniBadge = {
-  width: "fit-content",
-  padding: "10px 14px",
-  borderRadius: "999px",
-  background: "rgba(112,99,255,0.14)",
-  border: "1px solid rgba(141,132,255,0.24)",
-  color: "#c8c5ff",
-  fontSize: "13px",
-  fontWeight: 600
+const brandRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: "12px"
 };
 
-const heroTitle = {
-  margin: 0,
-  fontSize: "60px",
-  lineHeight: 1.02,
-  letterSpacing: "-1.6px",
-  maxWidth: "740px"
+const topLogo = {
+  width: "42px",
+  height: "42px",
+  borderRadius: "12px",
+  display: "grid",
+  placeItems: "center",
+  background: "linear-gradient(180deg, #33c7ff, #2f88ff)",
+  boxShadow: "0 0 24px rgba(44,140,255,0.32)"
 };
 
-const heroSubtitle = {
-  margin: 0,
-  color: "#bed0f7",
-  lineHeight: 1.7,
+const brandName = {
   fontSize: "18px",
-  maxWidth: "700px"
+  fontWeight: 800
 };
 
-const heroActions = {
+const brandMeta = {
+  color: "#6f87b6",
+  fontSize: "12px"
+};
+
+const topbarActions = {
   display: "flex",
-  gap: "12px",
+  alignItems: "center",
+  gap: "10px",
   flexWrap: "wrap"
 };
 
-const primaryHeroBtn = {
-  padding: "14px 18px",
-  border: "none",
-  borderRadius: "14px",
-  background: "linear-gradient(90deg, #6c5cff, #7b6bff)",
-  color: "white",
-  fontWeight: 700,
-  cursor: "pointer",
-  boxShadow: "0 16px 40px rgba(92,77,255,0.28)"
+const sourceBadge = {
+  padding: "8px 12px",
+  borderRadius: "999px",
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "#88a8de",
+  fontSize: "12px",
+  fontWeight: 700
 };
 
-const secondaryHeroBtn = {
-  padding: "14px 18px",
-  borderRadius: "14px",
-  background: "rgba(255,255,255,0.05)",
-  border: "1px solid rgba(255,255,255,0.12)",
+const diseaseChip = {
+  padding: "8px 14px",
+  borderRadius: "999px",
+  background: "rgba(0,189,156,0.10)",
+  border: "1px solid rgba(0,189,156,0.18)",
+  color: "#37d3ba",
+  fontSize: "13px",
+  fontWeight: 700
+};
+
+const topbarBtn = {
+  padding: "10px 14px",
+  borderRadius: "12px",
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.03)",
+  color: "#d8e6ff",
+  cursor: "pointer"
+};
+
+const contextBar = {
+  margin: "18px 18px 0",
+  padding: "16px",
+  borderRadius: "16px",
+  background: "linear-gradient(180deg, rgba(10,24,54,0.92), rgba(8,18,42,0.96))",
+  border: "1px solid rgba(255,255,255,0.06)"
+};
+
+const contextBarHeader = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: "12px"
+};
+
+const contextBarTitle = {
+  fontWeight: 800,
+  fontSize: "16px"
+};
+
+const contextCloseBtn = {
+  border: "none",
+  background: "transparent",
+  color: "#8ea4d2",
+  fontSize: "22px",
+  cursor: "pointer"
+};
+
+const contextGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(5, minmax(120px, 1fr))",
+  gap: "12px"
+};
+
+const contextInput = {
+  padding: "12px 14px",
+  borderRadius: "12px",
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.03)",
+  color: "white",
+  outline: "none"
+};
+
+const saveContextBtn = {
+  border: "none",
+  borderRadius: "12px",
+  background: "linear-gradient(90deg, #2a9cff, #3d7dff)",
   color: "white",
   fontWeight: 700,
   cursor: "pointer"
 };
 
-const heroStats = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(120px, 1fr))",
-  gap: "12px",
-  maxWidth: "640px"
+const contentArea = {
+  flex: 1,
+  padding: "22px 22px 130px"
 };
 
-const heroStatCard = {
-  background: "rgba(255,255,255,0.045)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: "18px",
-  padding: "16px",
-  backdropFilter: "blur(10px)"
+const emptyStateWrap = {
+  maxWidth: "980px",
+  margin: "36px auto 0",
+  textAlign: "center"
 };
 
-const heroStatValue = {
-  fontSize: "28px",
-  fontWeight: 800,
-  marginBottom: "6px"
-};
-
-const heroStatLabel = {
-  color: "#aebfe8",
-  fontSize: "13px"
-};
-
-const premiumPanel = {
-  width: "100%",
-  minHeight: "470px",
-  borderRadius: "28px",
-  background:
-    "linear-gradient(180deg, rgba(16,26,58,0.95), rgba(8,15,34,0.96))",
-  border: "1px solid rgba(255,255,255,0.08)",
-  boxShadow: "0 30px 80px rgba(0,0,0,0.34)",
-  padding: "22px",
+const brandIconWrap = {
   position: "relative",
+  width: "86px",
+  height: "86px",
+  margin: "0 auto 18px"
+};
+
+const brandIconGlow = {
+  position: "absolute",
+  inset: 0,
+  borderRadius: "24px",
+  background: "radial-gradient(circle, rgba(52,144,255,0.36), transparent 68%)",
+  filter: "blur(10px)"
+};
+
+const brandIcon = {
+  position: "relative",
+  width: "86px",
+  height: "86px",
+  borderRadius: "24px",
+  display: "grid",
+  placeItems: "center",
+  fontSize: "34px",
+  background: "linear-gradient(180deg, #33c7ff, #2f88ff)"
+};
+
+const emptyTitle = {
+  fontSize: "56px",
+  margin: "0 0 14px"
+};
+
+const emptySubtitle = {
+  maxWidth: "780px",
+  margin: "0 auto 26px",
+  color: "#9ab0da",
+  lineHeight: 1.7,
+  fontSize: "18px"
+};
+
+const quickSearchTitle = {
+  color: "#7e95c8",
+  fontSize: "12px",
+  letterSpacing: "1px",
+  textTransform: "uppercase",
+  marginBottom: "10px"
+};
+
+const quickPromptGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(260px, 1fr))",
+  gap: "12px",
+  maxWidth: "760px",
+  margin: "0 auto"
+};
+
+const quickPromptBtn = {
+  padding: "16px 18px",
+  borderRadius: "16px",
+  border: "1px solid rgba(255,255,255,0.06)",
+  background: "rgba(255,255,255,0.035)",
+  color: "#dce8ff",
+  cursor: "pointer",
+  textAlign: "left",
+  fontWeight: 600
+};
+
+const pipelineCard = {
+  maxWidth: "980px",
+  margin: "24px auto 0",
+  borderRadius: "20px",
+  background: "linear-gradient(180deg, rgba(12,30,64,0.96), rgba(10,24,52,0.98))",
+  border: "1px solid rgba(255,255,255,0.07)",
+  padding: "18px 18px 20px"
+};
+
+const pipelineHeaderRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: "14px",
+  marginBottom: "16px"
+};
+
+const pipelineAvatar = {
+  width: "42px",
+  height: "42px",
+  borderRadius: "12px",
+  display: "grid",
+  placeItems: "center",
+  background: "linear-gradient(180deg, #33c7ff, #2f88ff)"
+};
+
+const pipelineTitle = {
+  color: "#4da5ff",
+  fontSize: "14px",
+  fontWeight: 800,
+  letterSpacing: "1px"
+};
+
+const progressBarWrap = {
+  height: "4px",
+  borderRadius: "999px",
+  background: "rgba(255,255,255,0.08)",
+  marginTop: "10px",
   overflow: "hidden"
 };
 
-const premiumPanelTop = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  marginBottom: "18px"
+const progressBar = {
+  height: "100%",
+  background: "linear-gradient(90deg, #2f8fff, #4bd6ff)"
 };
 
-const tinyDots = {
-  display: "flex",
-  gap: "8px"
-};
-
-const dotPink = {
-  width: "10px",
-  height: "10px",
-  borderRadius: "50%",
-  background: "#fb7185"
-};
-
-const dotBlue = {
-  width: "10px",
-  height: "10px",
-  borderRadius: "50%",
-  background: "#60a5fa"
-};
-
-const dotGreen = {
-  width: "10px",
-  height: "10px",
-  borderRadius: "50%",
-  background: "#34d399"
-};
-
-const topLabel = {
-  color: "#9ab4ea",
+const progressText = {
+  color: "#8aa3d2",
   fontSize: "13px",
-  fontWeight: 600
+  fontWeight: 700
 };
 
-const reportHeadline = {
-  fontSize: "28px",
-  fontWeight: 800,
-  marginBottom: "18px"
+const pipelineLogWrap = {
+  background: "rgba(255,255,255,0.02)",
+  borderRadius: "16px",
+  padding: "16px"
 };
 
-const reportRows = {
-  display: "grid",
-  gap: "12px"
-};
-
-const reportRow = {
+const pipelineLogLine = {
   display: "flex",
-  justifyContent: "space-between",
-  gap: "14px",
-  padding: "14px 16px",
-  background: "rgba(255,255,255,0.045)",
-  border: "1px solid rgba(255,255,255,0.05)",
-  borderRadius: "16px"
-};
-
-const reportKey = {
-  color: "#9db2e6",
-  fontWeight: 600
-};
-
-const reportVal = {
-  color: "white",
-  fontWeight: 700,
-  textAlign: "right"
-};
-
-const analyticsWrap = {
-  marginTop: "28px",
-  height: "140px",
-  display: "flex",
-  alignItems: "flex-end",
-  gap: "16px"
-};
-
-const barOne = {
-  width: "18%",
-  borderRadius: "16px 16px 4px 4px",
-  background: "linear-gradient(180deg, #6c5cff, #8b80ff)"
-};
-
-const barTwo = {
-  width: "18%",
-  borderRadius: "16px 16px 4px 4px",
-  background: "linear-gradient(180deg, #4ecdc4, #22c55e)"
-};
-
-const barThree = {
-  width: "18%",
-  borderRadius: "16px 16px 4px 4px",
-  background: "linear-gradient(180deg, #60a5fa, #38bdf8)"
-};
-
-const barFour = {
-  width: "18%",
-  borderRadius: "16px 16px 4px 4px",
-  background: "linear-gradient(180deg, #f472b6, #fb7185)"
-};
-
-const smartIndicator = {
-  marginTop: "20px",
+  gap: "10px",
+  color: "#d9e8ff",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSize: "14px",
-  color: "#bdddff",
-  fontWeight: 600
+  marginBottom: "10px"
 };
 
-const searchCard = {
-  maxWidth: "1240px",
-  margin: "0 auto 20px",
-  background: "rgba(16,26,58,0.72)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: "24px",
-  padding: "26px",
-  backdropFilter: "blur(18px)",
-  boxShadow: "0 20px 60px rgba(0,0,0,0.22)"
+const pipelineDot = {
+  color: "#3da2ff"
 };
 
-const glassCard = {
-  maxWidth: "1240px",
-  margin: "20px auto 0",
-  background: "rgba(16,26,58,0.72)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: "24px",
-  padding: "24px",
-  backdropFilter: "blur(18px)",
-  boxShadow: "0 20px 60px rgba(0,0,0,0.18)"
+const pipelineMuted = {
+  color: "#7e95c8",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
 };
 
-const cardHeaderRow = {
+const resultsWrap = {
+  maxWidth: "1080px",
+  margin: "0 auto"
+};
+
+const queryBubbleWrap = {
   display: "flex",
-  justifyContent: "space-between",
-  alignItems: "flex-start",
+  justifyContent: "flex-end",
+  alignItems: "center",
   gap: "10px",
   marginBottom: "16px"
 };
 
-const cardEyebrow = {
-  color: "#8fb0ff",
-  fontSize: "13px",
-  fontWeight: 700,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-  marginBottom: "6px"
+const queryBubble = {
+  maxWidth: "70%",
+  padding: "16px 18px",
+  borderRadius: "18px",
+  background: "linear-gradient(180deg, rgba(18,39,80,0.96), rgba(14,31,64,0.96))",
+  border: "1px solid rgba(255,255,255,0.07)",
+  fontWeight: 600
 };
 
-const cardTitle = {
-  margin: 0,
-  fontSize: "28px",
-  letterSpacing: "-0.4px"
-};
-
-const statusPill = {
-  padding: "10px 14px",
-  borderRadius: "999px",
-  background: "rgba(52,211,153,0.14)",
-  color: "#86efac",
-  fontWeight: 700,
-  fontSize: "13px",
-  border: "1px solid rgba(52,211,153,0.18)"
-};
-
-const inputGrid = {
+const userMiniAvatar = {
+  width: "34px",
+  height: "34px",
+  borderRadius: "10px",
   display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
-  gap: "14px",
-  marginBottom: "16px"
+  placeItems: "center",
+  background: "rgba(255,255,255,0.05)"
 };
 
-const inputStyle = {
-  padding: "15px 16px",
-  borderRadius: "14px",
-  border: "1px solid rgba(255,255,255,0.08)",
-  fontSize: "15px",
-  outline: "none",
-  background: "rgba(36,52,86,0.9)",
-  color: "white",
-  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)"
-};
-
-const primaryFullBtn = {
-  width: "100%",
-  padding: "15px 18px",
-  border: "none",
-  borderRadius: "14px",
-  background: "linear-gradient(90deg, #6c5cff, #7b6bff)",
-  color: "white",
-  fontWeight: 800,
-  fontSize: "15px",
-  cursor: "pointer",
-  boxShadow: "0 18px 40px rgba(92,77,255,0.24)"
-};
-
-const successBanner = {
-  marginTop: "12px",
+const errorBanner = {
+  marginBottom: "16px",
   padding: "14px 16px",
   borderRadius: "14px",
-  background: "rgba(52,211,153,0.10)",
-  border: "1px solid rgba(52,211,153,0.20)",
-  color: "#86efac",
-  textAlign: "center",
-  fontWeight: 700
+  background: "rgba(239,68,68,0.12)",
+  border: "1px solid rgba(239,68,68,0.25)",
+  color: "#fca5a5"
 };
 
-const detailsGrid = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
-  gap: "12px"
-};
-
-const detailTile = {
-  background: "rgba(255,255,255,0.035)",
+const workspaceCard = {
+  borderRadius: "22px",
+  background: "linear-gradient(180deg, rgba(12,27,58,0.98), rgba(9,19,41,0.98))",
   border: "1px solid rgba(255,255,255,0.06)",
+  overflow: "hidden"
+};
+
+const workspaceTopRow = {
+  display: "flex",
+  gap: "14px",
+  alignItems: "center",
+  padding: "16px 18px 0"
+};
+
+const assistantMiniAvatar = {
+  width: "38px",
+  height: "38px",
+  borderRadius: "12px",
+  display: "grid",
+  placeItems: "center",
+  background: "linear-gradient(180deg, #33c7ff, #2f88ff)"
+};
+
+const tabsWrap = {
+  display: "flex",
+  gap: "8px",
+  flexWrap: "wrap",
+  borderBottom: "1px solid rgba(255,255,255,0.05)",
+  width: "100%"
+};
+
+const tabBtn = {
+  padding: "12px 12px 14px",
+  background: "transparent",
+  border: "none",
+  cursor: "pointer",
+  fontWeight: 700,
+  display: "flex",
+  alignItems: "center",
+  gap: "8px"
+};
+
+const tabBadge = {
+  minWidth: "22px",
+  height: "22px",
+  borderRadius: "999px",
+  background: "rgba(77,165,255,0.16)",
+  color: "#55a9ff",
+  display: "grid",
+  placeItems: "center",
+  fontSize: "12px",
+  fontWeight: 800,
+  padding: "0 6px"
+};
+
+const tabBody = {
+  padding: "18px"
+};
+
+const cardGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(280px, 1fr))",
+  gap: "14px"
+};
+
+const evidenceCard = {
+  display: "block",
   borderRadius: "18px",
+  background: "linear-gradient(180deg, rgba(16,31,64,0.98), rgba(12,23,49,0.98))",
+  border: "1px solid rgba(255,255,255,0.05)",
   padding: "16px"
 };
 
-const detailLabel = {
-  display: "block",
-  color: "#99b2e7",
+const paperDetailGrid = {
+  display: "grid",
+  gap: "10px",
+  marginTop: "4px",
+  marginBottom: "14px",
+  padding: "14px",
+  borderRadius: "14px",
+  background: "rgba(255,255,255,0.03)",
+  border: "1px solid rgba(255,255,255,0.05)"
+};
+
+const paperDetailRow = {
+  display: "grid",
+  gridTemplateColumns: "90px 1fr",
+  gap: "12px",
+  alignItems: "start"
+};
+
+const paperDetailLabel = {
+  color: "#7f95c8",
   fontSize: "13px",
+  fontWeight: 700
+};
+
+const paperDetailValue = {
+  color: "#dbe7ff",
+  fontSize: "14px",
+  lineHeight: 1.6,
+  wordBreak: "break-word"
+};
+
+const paperActionBtn = {
+  display: "inline-block",
+  marginTop: "4px",
+  padding: "10px 14px",
+  borderRadius: "12px",
+  background: "linear-gradient(90deg, #2a9cff, #3d7dff)",
+  color: "white",
+  fontWeight: 700,
+  textDecoration: "none"
+};
+
+const emptyTabState = {
+  color: "#7f95c8",
+  padding: "12px"
+};
+
+const composerDock = {
+  position: "sticky",
+  bottom: 0,
+  padding: "12px 18px 16px",
+  background: "linear-gradient(180deg, rgba(4,14,33,0), rgba(4,14,33,0.96) 26%)",
+  backdropFilter: "blur(8px)"
+};
+
+const composerInner = {
+  maxWidth: "1080px",
+  margin: "0 auto",
+  display: "grid",
+  gridTemplateColumns: "1fr 48px 48px",
+  gap: "8px",
+  alignItems: "center",
+  background: "linear-gradient(180deg, rgba(11,24,52,0.96), rgba(8,19,41,0.98))",
+  border: "1px solid rgba(255,255,255,0.07)",
+  borderRadius: "18px",
+  padding: "10px"
+};
+
+const composerInput = {
+  width: "100%",
+  background: "transparent",
+  border: "none",
+  outline: "none",
+  color: "white",
+  fontSize: "16px",
+  padding: "10px 12px"
+};
+
+const composerIconBtn = {
+  width: "44px",
+  height: "44px",
+  borderRadius: "14px",
+  border: "1px solid rgba(255,255,255,0.06)",
+  background: "rgba(255,255,255,0.03)",
+  color: "#9cc5ff",
+  cursor: "pointer"
+};
+
+const composerSendBtn = {
+  width: "44px",
+  height: "44px",
+  borderRadius: "14px",
+  border: "none",
+  background: "linear-gradient(180deg, #2f8fff, #47b0ff)",
+  color: "white",
+  cursor: "pointer",
+  fontWeight: 800
+};
+
+const disclaimer = {
+  textAlign: "center",
+  color: "#6f87b6",
+  fontSize: "12px",
+  marginTop: "8px"
+};
+
+const analysisPremiumWrap = {
+  display: "grid",
+  gap: "18px"
+};
+
+const analysisHeroCard = {
+  position: "relative",
+  overflow: "hidden",
+  borderRadius: "22px",
+  padding: "22px",
+  background:
+    "linear-gradient(135deg, rgba(28,63,125,0.55), rgba(15,29,64,0.82) 45%, rgba(17,43,91,0.72))",
+  border: "1px solid rgba(106,162,255,0.14)",
+  boxShadow: "0 18px 40px rgba(3, 10, 28, 0.26)"
+};
+
+const analysisHeroGlow = {
+  position: "absolute",
+  top: "-40px",
+  right: "-40px",
+  width: "180px",
+  height: "180px",
+  borderRadius: "999px",
+  background: "radial-gradient(circle, rgba(74,170,255,0.18), transparent 68%)",
+  pointerEvents: "none"
+};
+
+const analysisHeroContent = {
+  position: "relative",
+  zIndex: 2
+};
+
+const analysisHeroTop = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: "16px",
+  alignItems: "flex-start",
+  flexWrap: "wrap",
+  marginBottom: "18px"
+};
+
+const analysisEyebrow = {
+  color: "#76b8ff",
+  fontSize: "12px",
+  letterSpacing: "1px",
+  textTransform: "uppercase",
+  fontWeight: 800,
   marginBottom: "8px"
 };
 
-const detailValue = {
+const analysisHeroTitle = {
+  fontSize: "28px",
+  lineHeight: 1.3,
+  fontWeight: 800,
+  color: "#f4f8ff",
+  maxWidth: "760px"
+};
+
+const analysisConfidencePill = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "10px 14px",
+  borderRadius: "999px",
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "#dce8ff",
   fontWeight: 700,
-  color: "white"
+  fontSize: "13px"
 };
 
-const highlightText = {
-  fontSize: "18px",
-  color: "#d8e5ff"
+const analysisConfidenceDot = {
+  width: "10px",
+  height: "10px",
+  borderRadius: "999px",
+  background: "linear-gradient(180deg, #45d6ff, #3f92ff)",
+  boxShadow: "0 0 14px rgba(69,214,255,0.55)"
 };
 
-const chatBubble = {
-  padding: "16px",
+const analysisStatsRow = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(120px, 1fr))",
+  gap: "12px"
+};
+
+const analysisMiniStat = {
   borderRadius: "16px",
-  marginBottom: "12px",
+  padding: "14px 16px",
+  background: "rgba(255,255,255,0.035)",
   border: "1px solid rgba(255,255,255,0.06)"
 };
 
-const chatRole = {
-  color: "#9fc4ff",
-  fontSize: "13px",
-  fontWeight: 700,
-  marginBottom: "8px",
+const analysisMiniStatValue = {
+  fontSize: "28px",
+  fontWeight: 800,
+  color: "#ffffff",
+  marginBottom: "4px"
+};
+
+const analysisMiniStatLabel = {
+  fontSize: "12px",
+  color: "#8ea8d8",
   textTransform: "uppercase",
   letterSpacing: "0.8px"
 };
 
-const chatText = {
-  color: "#eef4ff",
-  lineHeight: 1.7
+const analysisPremiumGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(280px, 1fr))",
+  gap: "16px"
 };
 
-const statsGrid = {
+const analysisGlassCard = {
+  borderRadius: "20px",
+  padding: "20px",
+  background:
+    "linear-gradient(180deg, rgba(17,35,73,0.84), rgba(11,24,52,0.96))",
+  border: "1px solid rgba(106,162,255,0.10)",
+  boxShadow: "0 12px 28px rgba(2, 8, 24, 0.22)"
+};
+
+const analysisCardIcon = {
+  width: "42px",
+  height: "42px",
+  borderRadius: "14px",
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+  placeItems: "center",
+  marginBottom: "14px",
+  color: "#8fd0ff",
+  fontWeight: 800,
+  fontSize: "18px",
+  background: "linear-gradient(180deg, rgba(63,146,255,0.20), rgba(48,104,196,0.10))",
+  border: "1px solid rgba(111,177,255,0.12)"
+};
+
+const analysisCardTitle = {
+  fontSize: "18px",
+  fontWeight: 800,
+  color: "#f4f8ff",
+  marginBottom: "10px"
+};
+
+const analysisCardText = {
+  color: "#cfe0ff",
+  lineHeight: 1.8,
+  fontSize: "15px"
+};
+
+const premiumAnalyticsWrap = {
+  display: "grid",
+  gap: "18px"
+};
+
+const analyticsHeroCard = {
+  position: "relative",
+  overflow: "hidden",
+  borderRadius: "22px",
+  padding: "22px",
+  background:
+    "linear-gradient(135deg, rgba(23,49,98,0.72), rgba(15,28,61,0.92) 46%, rgba(27,39,92,0.78))",
+  border: "1px solid rgba(92,144,255,0.12)",
+  boxShadow: "0 16px 34px rgba(2, 8, 24, 0.22)"
+};
+
+const analyticsHeroGlow = {
+  position: "absolute",
+  top: "-60px",
+  right: "-40px",
+  width: "220px",
+  height: "220px",
+  borderRadius: "999px",
+  background: "radial-gradient(circle, rgba(86,183,255,0.16), transparent 70%)",
+  pointerEvents: "none"
+};
+
+const analyticsHeroContent = {
+  position: "relative",
+  zIndex: 2
+};
+
+const analyticsHeroTop = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: "16px",
+  flexWrap: "wrap",
+  alignItems: "flex-start",
+  marginBottom: "18px"
+};
+
+const analyticsEyebrow = {
+  color: "#7cbcff",
+  fontSize: "12px",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  fontWeight: 800,
+  marginBottom: "8px"
+};
+
+const analyticsHeroTitle = {
+  fontSize: "30px",
+  lineHeight: 1.25,
+  fontWeight: 800,
+  color: "#f5f8ff",
+  marginBottom: "8px"
+};
+
+const analyticsHeroSubtitle = {
+  color: "#a7bbdf",
+  fontSize: "15px",
+  lineHeight: 1.7,
+  maxWidth: "720px"
+};
+
+const analyticsBadgeGroup = {
+  display: "flex",
+  gap: "10px",
+  flexWrap: "wrap"
+};
+
+const analyticsBadgeBlue = {
+  padding: "10px 14px",
+  borderRadius: "999px",
+  background: "rgba(86,183,255,0.12)",
+  border: "1px solid rgba(86,183,255,0.18)",
+  color: "#8fcfff",
+  fontWeight: 700,
+  fontSize: "13px"
+};
+
+const analyticsBadgeCyan = {
+  padding: "10px 14px",
+  borderRadius: "999px",
+  background: "rgba(65,214,232,0.12)",
+  border: "1px solid rgba(65,214,232,0.18)",
+  color: "#84ebf5",
+  fontWeight: 700,
+  fontSize: "13px"
+};
+
+const analyticsBadgePurple = {
+  padding: "10px 14px",
+  borderRadius: "999px",
+  background: "rgba(154,130,255,0.12)",
+  border: "1px solid rgba(154,130,255,0.18)",
+  color: "#beafff",
+  fontWeight: 700,
+  fontSize: "13px"
+};
+
+const premiumPulseRow = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
+  gap: "16px"
+};
+
+const signalOrbWrap = {
+  borderRadius: "20px",
+  padding: "18px",
+  background: "rgba(255,255,255,0.03)",
+  border: "1px solid rgba(255,255,255,0.05)",
+  display: "grid",
+  justifyItems: "center"
+};
+
+const signalOrbRing = {
+  width: "128px",
+  height: "128px",
+  borderRadius: "999px",
+  display: "grid",
+  placeItems: "center",
+  padding: "10px",
+  marginBottom: "12px"
+};
+
+const signalOrbCore = {
+  width: "100%",
+  height: "100%",
+  borderRadius: "999px",
+  display: "grid",
+  placeItems: "center",
+  border: "1px solid rgba(255,255,255,0.06)",
+  backdropFilter: "blur(8px)"
+};
+
+const signalOrbValue = {
+  fontSize: "34px",
+  fontWeight: 800,
+  color: "#ffffff"
+};
+
+const signalOrbLabel = {
+  fontSize: "16px",
+  fontWeight: 700,
+  color: "#eef4ff",
+  marginBottom: "4px"
+};
+
+const signalOrbSubtext = {
+  fontSize: "13px",
+  color: "#8ea8d8"
+};
+
+const analyticsInsightGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
   gap: "14px"
 };
 
-const statCard = {
-  background: "rgba(255,255,255,0.04)",
-  border: "1px solid rgba(255,255,255,0.06)",
+const metricGlassCard = {
   borderRadius: "18px",
-  padding: "16px"
+  background: "linear-gradient(180deg, rgba(18,35,72,0.82), rgba(11,22,48,0.96))",
+  border: "1px solid rgba(255,255,255,0.05)",
+  padding: "18px"
 };
 
-const statTitle = {
-  color: "#a6bae8",
+const metricGlassTitle = {
+  color: "#90a7d4",
   fontSize: "13px",
   marginBottom: "10px"
 };
 
-const statNumber = {
-  fontSize: "28px",
+const metricGlassValue = {
+  fontSize: "34px",
   fontWeight: 800
 };
 
-const resultCard = {
-  background: "linear-gradient(180deg, rgba(26,41,73,0.96), rgba(15,26,51,0.96))",
-  border: "1px solid rgba(255,255,255,0.06)",
+const analyticsQueryCard = {
   borderRadius: "20px",
   padding: "18px",
-  marginBottom: "14px",
-  boxShadow: "0 12px 30px rgba(0,0,0,0.16)"
+  background: "linear-gradient(180deg, rgba(17,35,73,0.80), rgba(10,20,44,0.96))",
+  border: "1px solid rgba(255,255,255,0.05)"
 };
 
-const resultTitle = {
-  marginTop: 0,
-  marginBottom: "16px",
-  fontSize: "22px"
-};
-
-const resultMetaGrid = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+const analyticsQueryHeader = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
   gap: "12px",
-  marginBottom: "14px"
+  marginBottom: "14px",
+  flexWrap: "wrap"
 };
 
-const resultMetaTile = {
-  background: "rgba(255,255,255,0.035)",
-  border: "1px solid rgba(255,255,255,0.05)",
-  borderRadius: "14px",
-  padding: "12px"
+const analyticsQueryTitle = {
+  fontSize: "18px",
+  fontWeight: 800,
+  color: "#f4f8ff"
 };
 
-const resultMetaLabel = {
-  color: "#9cb2e8",
-  fontSize: "12px",
-  marginBottom: "6px",
-  textTransform: "uppercase",
-  letterSpacing: "0.7px"
-};
-
-const resultMetaValue = {
-  color: "white",
-  lineHeight: 1.55
-};
-
-const resultLink = {
-  display: "inline-block",
-  marginTop: "6px",
-  color: "#7dd3fc",
+const analyticsQueryCount = {
+  color: "#86bfff",
+  fontSize: "13px",
   fontWeight: 700,
-  textDecoration: "none"
+  padding: "8px 12px",
+  borderRadius: "999px",
+  background: "rgba(86,183,255,0.10)",
+  border: "1px solid rgba(86,183,255,0.14)"
+};
+
+const analyticsQueryFlow = {
+  display: "grid",
+  gap: "12px"
+};
+
+const queryFlowItem = {
+  display: "grid",
+  gridTemplateColumns: "18px 1fr",
+  gap: "12px",
+  alignItems: "start",
+  padding: "12px 14px",
+  borderRadius: "14px",
+  background: "rgba(255,255,255,0.03)",
+  border: "1px solid rgba(255,255,255,0.05)"
+};
+
+const queryFlowDot = {
+  width: "12px",
+  height: "12px",
+  borderRadius: "999px",
+  marginTop: "5px",
+  background: "linear-gradient(180deg, #56b7ff, #41d6e8)",
+  boxShadow: "0 0 12px rgba(86,183,255,0.45)"
+};
+
+const queryFlowText = {
+  color: "#dce8ff",
+  fontSize: "14px",
+  lineHeight: 1.6,
+  wordBreak: "break-word"
+};
+
+const queryFlowEmpty = {
+  color: "#87a1d2",
+  fontSize: "14px"
 };
 
 export default App;

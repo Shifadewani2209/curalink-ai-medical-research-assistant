@@ -1,58 +1,99 @@
-import axios from "axios";
+export async function fetchPubMedResults(query) {
+  if (!query) return [];
 
-export const fetchPubMedResults = async ({ disease, query }) => {
-  try {
-    const searchText = [disease, query].filter(Boolean).join(" ").trim();
+  const cleanedQuery = String(query)
+    .replace(/\b(Toronto|Canada|India|Pune|Mumbai|Delhi)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-    if (!searchText) {
-      return [];
-    }
+  const fallbackQueries = [
+    cleanedQuery,
+    cleanedQuery.replace(/for\s+/gi, " ").trim(),
+    cleanedQuery.split(" ").slice(0, 6).join(" ").trim(),
+    cleanedQuery
+      .replace(/[^a-zA-Z0-9\s'-]/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 4)
+      .join(" ")
+      .trim()
+  ].filter(Boolean);
 
-    const searchResponse = await axios.get(
-      "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-      {
-        params: {
-          db: "pubmed",
-          term: searchText,
-          retmode: "json",
-          retmax: 5
+  for (const searchTerm of [...new Set(fallbackQueries)]) {
+    try {
+      const searchUrl =
+        `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi` +
+        `?db=pubmed` +
+        `&term=${encodeURIComponent(searchTerm)}` +
+        `&retmode=json` +
+        `&retmax=8` +
+        `&sort=relevance`;
+
+      const searchResponse = await fetch(searchUrl, {
+        headers: {
+          accept: "application/json",
+          "user-agent": "CuraLinkAI/1.0"
         }
+      });
+
+      if (!searchResponse.ok) {
+        console.error(`PubMed search failed with status ${searchResponse.status}`);
+        continue;
       }
-    );
 
-    const pubmedIds = searchResponse.data?.esearchresult?.idlist || [];
+      const searchData = await searchResponse.json();
+      const ids = searchData?.esearchresult?.idlist || [];
 
-    if (!pubmedIds.length) {
-      return [];
-    }
+      if (!ids.length) {
+        console.error("PubMed returned no IDs for query:", searchTerm);
+        continue;
+      }
 
-    const summaryResponse = await axios.get(
-      "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
-      {
-        params: {
-          db: "pubmed",
-          id: pubmedIds.join(","),
-          retmode: "json"
+      const summaryUrl =
+        `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi` +
+        `?db=pubmed` +
+        `&id=${ids.join(",")}` +
+        `&retmode=json`;
+
+      const summaryResponse = await fetch(summaryUrl, {
+        headers: {
+          accept: "application/json",
+          "user-agent": "CuraLinkAI/1.0"
         }
+      });
+
+      if (!summaryResponse.ok) {
+        console.error(`PubMed summary failed with status ${summaryResponse.status}`);
+        continue;
       }
-    );
 
-    const result = summaryResponse.data?.result || {};
+      const summaryData = await summaryResponse.json();
 
-    return pubmedIds.map((pmid) => {
-      const item = result[pmid];
+      const results = ids
+        .map((id) => {
+          const item = summaryData?.result?.[id];
+          if (!item) return null;
 
-      return {
-        id: pmid,
-        source: "PubMed",
-        title: item?.title || "No title available",
-        authors: item?.authors?.map((a) => a.name) || [],
-        year: item?.pubdate || "N/A",
-        url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`
-      };
-    });
-  } catch (error) {
-    console.error("PubMed API error:", error.message);
-    return [];
+          return {
+            id,
+            title: item.title || "Untitled publication",
+            year: item.pubdate ? String(item.pubdate).slice(0, 4) : "N/A",
+            authors: Array.isArray(item.authors)
+              ? item.authors.map((a) => a?.name).filter(Boolean)
+              : [],
+            url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+            source: "PubMed",
+            score: 0
+          };
+        })
+        .filter(Boolean);
+
+      console.error("PubMed fetched:", results.length, "using query:", searchTerm);
+      return results;
+    } catch (error) {
+      console.error("PubMed error:", error.message || error);
+    }
   }
-};
+
+  return [];
+}

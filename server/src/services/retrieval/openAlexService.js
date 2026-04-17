@@ -1,33 +1,28 @@
-import axios from "axios";
+export async function fetchOpenAlexResults(query) {
+  if (!query) return [];
 
-export const fetchOpenAlexResults = async (expandedQueries) => {
-  try {
-    const allResults = [];
+  const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&per-page=10`;
 
-    for (const query of expandedQueries) {
-      const response = await axios.get("https://api.openalex.org/works", {
-        params: {
-          search: query,
-          per_page: 3
-        }
-      });
-
-      const results = response.data.results.map((item, index) => ({
-        id: item.id || `${query}-${index}`,
-        source: "OpenAlex",
-        title: item.title || "No title available",
-        year: item.publication_year || "N/A",
-        authors:
-          item.authorships?.map((author) => author.author?.display_name).filter(Boolean) || [],
-        url: item.primary_location?.source?.homepage_url || item.id || "No URL available"
-      }));
-
-      allResults.push(...results);
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "CuraLinkAI/1.0"
     }
+  });
 
-    return allResults;
-  } catch (error) {
-    console.error("OpenAlex API error:", error.message);
-    return [];
+  if (!response.ok) {
+    throw new Error(`OpenAlex failed with status ${response.status}`);
   }
-};
+
+  const data = await response.json();
+  const results = data?.results || [];
+
+  return results.map((item) => ({
+    id: item.id,
+    title: item.title || "Untitled",
+    year: item.publication_year || "N/A",
+    authors: (item.authorships || []).map((a) => a.author?.display_name).filter(Boolean),
+    url: item.primary_location?.landing_page_url || item.id,
+    score: item.cited_by_count || 0,
+    source: "OpenAlex"
+  }));
+}

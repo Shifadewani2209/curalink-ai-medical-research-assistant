@@ -1,137 +1,72 @@
-import axios from "axios";
+export async function fetchClinicalTrials(query, location = "") {
+  const term = `${query || ""} ${location || ""}`.trim();
+  if (!term) return [];
 
-const fetchPubMedPublicationsByNctId = async (nctId) => {
+  const url =
+    `https://clinicaltrials.gov/api/v2/studies` +
+    `?query.term=${encodeURIComponent(term)}` +
+    `&pageSize=10` +
+    `&format=json`;
+
   try {
-    const searchResponse = await axios.get(
-      "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-      {
-        params: {
-          db: "pubmed",
-          term: `${nctId}[si] OR ${nctId}[tw]`,
-          retmode: "json",
-          retmax: 3
-        }
+    const response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "CuraLinkAI/1.0"
       }
-    );
+    });
 
-    const pubmedIds = searchResponse.data?.esearchresult?.idlist || [];
-
-    if (!pubmedIds.length) {
+    if (!response.ok) {
+      console.error(`ClinicalTrials failed with status ${response.status}`);
       return [];
     }
 
-    const summaryResponse = await axios.get(
-      "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
-      {
-        params: {
-          db: "pubmed",
-          id: pubmedIds.join(","),
-          retmode: "json"
-        }
-      }
-    );
+    const data = await response.json();
+    const studies = data?.studies || [];
 
-    const result = summaryResponse.data?.result || {};
+    return studies.map((study) => {
+      const protocol = study?.protocolSection || {};
+      const idModule = protocol?.identificationModule || {};
+      const statusModule = protocol?.statusModule || {};
+      const designModule = protocol?.designModule || {};
+      const conditionsModule = protocol?.conditionsModule || {};
+      const armsModule = protocol?.armsInterventionsModule || {};
+      const contactsLocationsModule = protocol?.contactsLocationsModule || {};
 
-    return pubmedIds.map((pmid) => {
-      const item = result[pmid];
+      const nctId = idModule?.nctId || "";
+      const title =
+        idModule?.briefTitle ||
+        protocol?.descriptionModule?.briefSummary ||
+        "Untitled trial";
+
+      const conditions = conditionsModule?.conditions || [];
+      const interventions =
+        (armsModule?.interventions || []).map((i) => i?.name).filter(Boolean);
+
+      const locations =
+        (contactsLocationsModule?.locations || [])
+          .map((loc) =>
+            [loc?.city, loc?.state, loc?.country].filter(Boolean).join(", ")
+          )
+          .filter(Boolean);
 
       return {
-        pmid,
-        title: item?.title || "No title available",
-        authors: item?.authors?.map((a) => a.name) || [],
-        year: item?.pubdate || "N/A",
-        source: "PubMed",
-        url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`
+        id: nctId || Math.random().toString(36).slice(2),
+        title,
+        condition: conditions,
+        intervention: interventions,
+        phase: Array.isArray(designModule?.phases)
+          ? designModule.phases.join(", ")
+          : designModule?.phases || "N/A",
+        status: statusModule?.overallStatus || "Unknown",
+        location: locations[0] || "N/A",
+        url: nctId ? `https://clinicaltrials.gov/study/${nctId}` : "#",
+        source: "ClinicalTrials",
+        score: 0
       };
     });
   } catch (error) {
-    console.error(`PubMed publication fetch failed for ${nctId}:`, error.message);
+    console.error("ClinicalTrials error:", error.message || error);
     return [];
   }
-};
-
-export const fetchClinicalTrialsResults = async ({ disease, query, location }) => {
-  try {
-    const searchText = [disease, query].filter(Boolean).join(" ").trim();
-
-    const response = await axios.get("https://clinicaltrials.gov/api/v2/studies", {
-      params: {
-        "query.term": searchText,
-        pageSize: 5
-      }
-    });
-
-    const studies = response.data?.studies || [];
-
-    const filteredStudies = studies.filter((study) => {
-      if (!location) return true;
-
-      const locations =
-        study?.protocolSection?.contactsLocationsModule?.locations || [];
-
-      return locations.some((loc) => {
-        const city = (loc.city || "").toLowerCase();
-        const country = (loc.country || "").toLowerCase();
-        const facility = (loc.facility || "").toLowerCase();
-        const userLocation = location.toLowerCase();
-
-        return (
-          city.includes(userLocation) ||
-          country.includes(userLocation) ||
-          facility.includes(userLocation)
-        );
-      });
-    });
-
-    const selectedStudies = filteredStudies.length > 0 ? filteredStudies : studies;
-
-    const trialsWithPublications = await Promise.all(
-      selectedStudies.slice(0, 5).map(async (study, index) => {
-        const protocol = study?.protocolSection || {};
-        const identification = protocol?.identificationModule || {};
-        const conditionsModule = protocol?.conditionsModule || {};
-        const armsModule = protocol?.armsInterventionsModule || {};
-        const statusModule = protocol?.statusModule || {};
-        const designModule = protocol?.designModule || {};
-        const contactsModule = protocol?.contactsLocationsModule || {};
-
-        const nctId = identification?.nctId || `trial-${index}`;
-
-        const interventions =
-          armsModule?.interventions?.map((item) => item.name).filter(Boolean) || [];
-
-        const locations = contactsModule?.locations || [];
-        const firstLocation = locations[0];
-
-        const publications = await fetchPubMedPublicationsByNctId(nctId);
-
-        return {
-          id: nctId,
-          source: "ClinicalTrials.gov",
-          title: identification?.briefTitle || "No title available",
-          condition: conditionsModule?.conditions || [],
-          intervention: interventions,
-          status: statusModule?.overallStatus || "N/A",
-          phase:
-            Array.isArray(designModule?.phases) && designModule.phases.length > 0
-              ? designModule.phases.join(", ")
-              : "N/A",
-          location: firstLocation
-            ? `${firstLocation.city || ""} ${firstLocation.country || ""}`.trim()
-            : "N/A",
-          url: `https://clinicaltrials.gov/study/${nctId}`,
-          publications
-        };
-      })
-    );
-
-    return trialsWithPublications;
-  } catch (error) {
-    console.error(
-      "ClinicalTrials.gov v2 API error:",
-      error.response?.data || error.message
-    );
-    return [];
-  }
-};
+}
