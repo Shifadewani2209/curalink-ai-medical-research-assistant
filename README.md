@@ -1,5 +1,5 @@
-<img width="1511" height="917" alt="image" src="https://github.com/user-attachments/assets/aff9bfc4-1129-49ec-9940-144e49b5388a" />
-<img width="550" height="939" alt="image" src="https://github.com/user-attachments/assets/41c8541b-747d-4eee-8129-45af30317846" />
+<img width="1212" height="806" alt="image" src="https://github.com/user-attachments/assets/bf60f914-598b-4301-bbda-54bc593cd602" />
+<img width="1117" height="994" alt="image" src="https://github.com/user-attachments/assets/108bc52b-de0a-4c91-a540-cb71a7b633fa" />
 
 # CuraLink AI Medical Research Assistant
 
