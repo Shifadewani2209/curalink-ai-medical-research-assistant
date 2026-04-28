@@ -1,4 +1,5 @@
 <img width="1212" height="806" alt="image" src="https://github.com/user-attachments/assets/bf60f914-598b-4301-bbda-54bc593cd602" />
+<img width="1893" height="839" alt="image" src="https://github.com/user-attachments/assets/11a946ff-e3d8-466e-8a57-4635405a7f9d" />
 <img width="1117" height="994" alt="image" src="https://github.com/user-attachments/assets/108bc52b-de0a-4c91-a540-cb71a7b633fa" />
 
 # CuraLink AI Medical Research Assistant
