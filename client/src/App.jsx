@@ -17,7 +17,86 @@ function App() {
     location: "Toronto, Canada",
     currentMedications: "Levodopa"
   });
+// LOGIN AUTHENTICATION
+    const [isLoggedIn, setIsLoggedIn] = useState(
+  localStorage.getItem("medresearch_login") === "true"
+);
 
+const [loginForm, setLoginForm] = useState({
+  username: "",
+  password: ""
+});
+
+const [loginError, setLoginError] = useState("");
+
+const handleLogin = () => {
+  if (loginForm.username === "admin" && loginForm.password === "1234") {
+    localStorage.setItem("medresearch_login", "true");
+    setIsLoggedIn(true);
+    setLoginError("");
+  } else {
+    setLoginError("Invalid login ID or password");
+  }
+};
+
+const handleLogout = () => {
+  localStorage.removeItem("medresearch_login");
+  setIsLoggedIn(false);
+};
+
+// LOGIN PAGE BEFORE MAIN APP
+if (!isLoggedIn) {
+  return (
+    <div style={loginPage}>
+      <div style={loginGlowOne} />
+      <div style={loginGlowTwo} />
+
+      <div style={loginCard}>
+        <div style={loginLogo}>✣</div>
+
+        <h1 style={loginTitle}>Welcome to MedResearchAI</h1>
+        <p style={loginSubtitle}>
+          Login or sign up to access your medical research workspace, saved patient context, and previous chat history.
+        </p>
+
+        <div style={loginSwitchWrap}>
+          <button style={loginSwitchActive}>Login</button>
+          <button style={loginSwitchInactive}>Sign Up</button>
+        </div>
+
+        <input
+          style={loginInput}
+          placeholder="Login ID"
+          value={loginForm.username}
+          onChange={(e) =>
+            setLoginForm((prev) => ({ ...prev, username: e.target.value }))
+          }
+        />
+
+        <input
+          style={loginInput}
+          type="password"
+          placeholder="Password"
+          value={loginForm.password}
+          onChange={(e) =>
+            setLoginForm((prev) => ({ ...prev, password: e.target.value }))
+          }
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleLogin();
+          }}
+        />
+
+        {loginError && <div style={loginErrorText}>{loginError}</div>}
+
+        <button style={loginButton} onClick={handleLogin}>
+          Continue
+        </button>
+
+        <div style={loginHint}>Demo Login: admin / 1234</div>
+      </div>
+    </div>
+  );
+}
   const [formData, setFormData] = useState({
     patientName: "John",
     disease: "Parkinson's disease",
@@ -337,8 +416,7 @@ function App() {
 
       <h1 style={emptyTitle}>MedResearchAI</h1>
       <p style={emptySubtitle}>
-        Powered by a premium research workflow over PubMed, OpenAlex, and ClinicalTrials.gov.
-        Context-aware evidence retrieval, ranking, follow-ups, and structured medical insight generation.
+        medical research assistant
       </p>
 
       <div style={quickSearchTitle}>Quick Searches</div>
@@ -752,7 +830,7 @@ function App() {
               <div style={topLogo}>✣</div>
               <div>
                 <div style={brandName}>MedResearchAI</div>
-                <div style={brandMeta}>MERN · PubMed · OpenAlex · ClinicalTrials</div>
+                <div style={brandMeta}>· PubMed · OpenAlex · ClinicalTrials</div>
               </div>
             </div>
 
@@ -841,7 +919,62 @@ function App() {
                   }
                 }}
               />
-              <button style={composerIconBtn}>◉</button>
+              <button
+  style={composerIconBtn}
+  title="Speak"
+  onClick={() => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert("Voice input works best in Google Chrome.");
+      return;
+    }
+
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then(() => {
+        const recognition = new SpeechRecognition();
+
+        recognition.lang = "en-IN";
+        recognition.interimResults = false;
+        recognition.continuous = false;
+        recognition.maxAlternatives = 1;
+
+        recognition.start();
+
+        recognition.onresult = (event) => {
+          const spokenText = event.results[0][0].transcript;
+
+          if (sessionId) {
+            setFollowUpMessage(spokenText);
+          } else {
+            setFormData((prev) => ({
+              ...prev,
+              query: spokenText
+            }));
+          }
+        };
+
+        recognition.onerror = (event) => {
+          console.error("Speech error:", event.error);
+
+          if (event.error === "not-allowed") {
+            alert("Microphone permission is blocked. Please allow microphone access from the browser address bar.");
+          } else if (event.error === "no-speech") {
+            alert("No speech detected. Click the mic and speak clearly after 1 second.");
+          } else {
+            alert("Voice input failed. Please try again in Google Chrome.");
+          }
+        };
+      })
+      .catch(() => {
+        alert("Please allow microphone permission to use voice input.");
+      });
+  }}
+>
+  🎙️
+</button>
               <button
                 style={composerSendBtn}
                 onClick={() => {
@@ -1064,11 +1197,13 @@ function EmptyTabState({ text }) {
 
 const pageStyle = {
   minHeight: "100vh",
+  width: "100%",
+  maxWidth: "100vw",
   background: "linear-gradient(180deg, #020a18 0%, #041126 100%)",
   color: "white",
   fontFamily: "Inter, Arial, sans-serif",
   position: "relative",
-  overflow: "hidden"
+  overflowX: "hidden"
 };
 
 const bgGlowLeft = {
@@ -1107,8 +1242,11 @@ const bgGlowCenter = {
 
 const appShell = {
   display: "grid",
-  gridTemplateColumns: "300px 1fr",
-  minHeight: "100vh"
+  gridTemplateColumns: "300px minmax(0, 1fr)",
+  minHeight: "100vh",
+  width: "100%",
+  maxWidth: "100vw",
+  overflowX: "hidden"
 };
 
 const sidebarStyle = {
@@ -1185,7 +1323,10 @@ const sessionCardSubtitle = {
 const mainArea = {
   display: "flex",
   flexDirection: "column",
-  minWidth: 0
+  minWidth: 0,
+  width: "100%",
+  maxWidth: "100%",
+  overflowX: "hidden"
 };
 
 const topbarStyle = {
@@ -1194,12 +1335,16 @@ const topbarStyle = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  padding: "0 22px",
+  padding: "0 24px",
   background: "linear-gradient(180deg, rgba(8,21,48,0.94), rgba(7,18,40,0.95))",
   position: "sticky",
   top: 0,
   zIndex: 20,
-  backdropFilter: "blur(10px)"
+  backdropFilter: "blur(10px)",
+  width: "100%",
+  maxWidth: "100%",
+  boxSizing: "border-box",
+  overflowX: "hidden"
 };
 
 const brandRow = {
@@ -1265,8 +1410,8 @@ const topbarBtn = {
 };
 
 const contextBar = {
-  margin: "18px 18px 0",
-  padding: "16px",
+  margin: "12px 24px 0",
+  padding: "14px",
   borderRadius: "16px",
   background: "linear-gradient(180deg, rgba(10,24,54,0.92), rgba(8,18,42,0.96))",
   border: "1px solid rgba(255,255,255,0.06)"
@@ -1294,7 +1439,7 @@ const contextCloseBtn = {
 
 const contextGrid = {
   display: "grid",
-  gridTemplateColumns: "repeat(5, minmax(120px, 1fr))",
+  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
   gap: "12px"
 };
 
@@ -1318,20 +1463,24 @@ const saveContextBtn = {
 
 const contentArea = {
   flex: 1,
-  padding: "22px 22px 130px"
+  width: "100%",
+  padding: "14px 24px 92px",
+  boxSizing: "border-box"
 };
 
+
 const emptyStateWrap = {
+  width: "100%",
   maxWidth: "980px",
-  margin: "36px auto 0",
+  margin: "18px auto 0",
   textAlign: "center"
 };
 
 const brandIconWrap = {
   position: "relative",
-  width: "86px",
-  height: "86px",
-  margin: "0 auto 18px"
+  width: "68px",
+  height: "68px",
+  margin: "0 auto 12px"
 };
 
 const brandIconGlow = {
@@ -1344,26 +1493,26 @@ const brandIconGlow = {
 
 const brandIcon = {
   position: "relative",
-  width: "86px",
-  height: "86px",
-  borderRadius: "24px",
+  width: "68px",
+  height: "68px",
+  borderRadius: "20px",
   display: "grid",
   placeItems: "center",
-  fontSize: "34px",
+  fontSize: "28px",
   background: "linear-gradient(180deg, #33c7ff, #2f88ff)"
 };
 
 const emptyTitle = {
-  fontSize: "56px",
-  margin: "0 0 14px"
+  fontSize: "46px",
+  margin: "0 0 10px"
 };
 
 const emptySubtitle = {
-  maxWidth: "780px",
-  margin: "0 auto 26px",
+  maxWidth: "760px",
+  margin: "0 auto 22px",
   color: "#9ab0da",
-  lineHeight: 1.7,
-  fontSize: "18px"
+  lineHeight: 1.55,
+  fontSize: "17px"
 };
 
 const quickSearchTitle = {
@@ -1376,15 +1525,16 @@ const quickSearchTitle = {
 
 const quickPromptGrid = {
   display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(260px, 1fr))",
-  gap: "12px",
-  maxWidth: "760px",
-  margin: "0 auto"
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: "10px",
+  maxWidth: "820px",
+  margin: "0 auto",
+  width: "100%"
 };
 
 const quickPromptBtn = {
-  padding: "16px 18px",
-  borderRadius: "16px",
+  padding: "14px 16px",
+  borderRadius: "14px",
   border: "1px solid rgba(255,255,255,0.06)",
   background: "rgba(255,255,255,0.035)",
   color: "#dce8ff",
@@ -1469,7 +1619,8 @@ const pipelineMuted = {
 };
 
 const resultsWrap = {
-  maxWidth: "1080px",
+  width: "100%",
+  maxWidth: "1280px",
   margin: "0 auto"
 };
 
@@ -1629,15 +1780,21 @@ const emptyTabState = {
 };
 
 const composerDock = {
-  position: "sticky",
+  position: "fixed",
+  left: "300px",
+  right: "0",
   bottom: 0,
-  padding: "12px 18px 16px",
-  background: "linear-gradient(180deg, rgba(4,14,33,0), rgba(4,14,33,0.96) 26%)",
-  backdropFilter: "blur(8px)"
+  padding: "10px 24px 12px",
+  background: "linear-gradient(180deg, rgba(4,14,33,0), rgba(4,14,33,0.98) 22%)",
+  backdropFilter: "blur(8px)",
+  zIndex: 30,
+  boxSizing: "border-box",
+  overflowX: "hidden"
 };
 
 const composerInner = {
-  maxWidth: "1080px",
+  width: "100%",
+  maxWidth: "980px",
   margin: "0 auto",
   display: "grid",
   gridTemplateColumns: "1fr 48px 48px",
@@ -1646,7 +1803,7 @@ const composerInner = {
   background: "linear-gradient(180deg, rgba(11,24,52,0.96), rgba(8,19,41,0.98))",
   border: "1px solid rgba(255,255,255,0.07)",
   borderRadius: "18px",
-  padding: "10px"
+  padding: "8px"
 };
 
 const composerInput = {
@@ -2083,3 +2240,134 @@ const queryFlowEmpty = {
 };
 
 export default App;
+const loginPage = {
+  minHeight: "100vh",
+  display: "grid",
+  placeItems: "center",
+  background: "linear-gradient(180deg, #020a18 0%, #041126 100%)",
+  color: "white",
+  fontFamily: "Inter, Arial, sans-serif",
+  position: "relative",
+  overflow: "hidden"
+};
+
+const loginGlowOne = {
+  position: "fixed",
+  width: "360px",
+  height: "360px",
+  borderRadius: "50%",
+  background: "radial-gradient(circle, rgba(47,143,255,0.18), transparent 70%)",
+  top: "18%",
+  left: "18%"
+};
+
+const loginGlowTwo = {
+  position: "fixed",
+  width: "420px",
+  height: "420px",
+  borderRadius: "50%",
+  background: "radial-gradient(circle, rgba(154,130,255,0.14), transparent 70%)",
+  bottom: "10%",
+  right: "14%"
+};
+
+const loginCard = {
+  width: "420px",
+  padding: "34px",
+  borderRadius: "26px",
+  background: "linear-gradient(180deg, rgba(12,30,64,0.96), rgba(8,18,42,0.98))",
+  border: "1px solid rgba(255,255,255,0.08)",
+  boxShadow: "0 28px 70px rgba(0,0,0,0.35)",
+  textAlign: "center",
+  zIndex: 2
+};
+
+const loginLogo = {
+  width: "76px",
+  height: "76px",
+  borderRadius: "22px",
+  margin: "0 auto 18px",
+  display: "grid",
+  placeItems: "center",
+  fontSize: "34px",
+  background: "linear-gradient(180deg, #33c7ff, #2f88ff)",
+  boxShadow: "0 0 34px rgba(47,143,255,0.32)"
+};
+
+const loginTitle = {
+  fontSize: "34px",
+  margin: "0 0 10px",
+  fontWeight: 800
+};
+
+const loginSubtitle = {
+  color: "#9ab0da",
+  lineHeight: 1.6,
+  marginBottom: "24px"
+};
+
+const loginInput = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "14px 16px",
+  marginBottom: "12px",
+  borderRadius: "14px",
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.04)",
+  color: "white",
+  outline: "none",
+  fontSize: "15px"
+};
+
+const loginButton = {
+  width: "100%",
+  padding: "15px",
+  borderRadius: "14px",
+  border: "none",
+  background: "linear-gradient(90deg, #2a9cff, #3d7dff)",
+  color: "white",
+  fontWeight: 800,
+  cursor: "pointer",
+  marginTop: "8px"
+};
+
+const loginErrorText = {
+  color: "#fca5a5",
+  fontSize: "14px",
+  marginBottom: "10px"
+};
+
+const loginHint = {
+  marginTop: "16px",
+  color: "#6f87b6",
+  fontSize: "13px"
+};
+const loginSwitchWrap = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: "8px",
+  padding: "6px",
+  borderRadius: "16px",
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.06)",
+  marginBottom: "18px"
+};
+const loginSwitchActive = {
+  padding: "12px",
+  borderRadius: "12px",
+  border: "none",
+  background: "linear-gradient(90deg, #2a9cff, #3d7dff)",
+  color: "white",
+  fontWeight: 800,
+  cursor: "pointer"
+};
+
+const loginSwitchInactive = {
+  padding: "12px",
+  borderRadius: "12px",
+  border: "none",
+  background: "transparent",
+  color: "#8ea8d8",
+  fontWeight: 800,
+  cursor: "pointer"
+};
