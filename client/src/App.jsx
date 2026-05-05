@@ -155,7 +155,7 @@ if (!isLoggedIn) {
 
   const fetchSavedPatients = async () => {
     try {
-      const res = await fetch("http://localhost:5000/patients");
+      const res = await fetch("https://curalink-backend-rho.vercel.app/");
       const data = await res.json();
       if (data.success) {
         setSavedPatients(data.patients || []);
@@ -167,7 +167,7 @@ if (!isLoggedIn) {
 
   const handleSaveContext = async () => {
   try {
-    const res = await fetch("http://localhost:5000/patients/save", {
+    const res = await fetch("https://curalink-backend-rho.vercel.app/patients/save", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -196,7 +196,7 @@ if (!isLoggedIn) {
   const loadPatientHistory = async (patientName) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/patients/${encodeURIComponent(patientName)}/history`
+        `https://curalink-backend-rho.vercel.app//patients/${encodeURIComponent(patientName)}/history`
       );
       const data = await res.json();
 
@@ -302,7 +302,7 @@ if (!isLoggedIn) {
       setActiveTab("analysis");
       simulatePipeline(userMessage);
 
-      const response = await fetch("http://localhost:5000/research", {
+      const response = await fetch("https://curalink-backend-rho.vercel.app/research", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
