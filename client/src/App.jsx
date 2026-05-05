@@ -196,7 +196,7 @@ if (!isLoggedIn) {
   const loadPatientHistory = async (patientName) => {
     try {
       const res = await fetch(
-        `https://curalink-backend-rho.vercel.app//patients/${encodeURIComponent(patientName)}/history`
+        `https://curalink-backend-rho.vercel.app/patients/${encodeURIComponent(patientName)}/history`
       );
       const data = await res.json();
 
@@ -302,7 +302,7 @@ if (!isLoggedIn) {
       setActiveTab("analysis");
       simulatePipeline(userMessage);
 
-      const response = await fetch("https://curalink-backend-rho.vercel.app/research", {
+      const response = await fetch("https://curalink-backend-rho.vercel.app/api/research", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
