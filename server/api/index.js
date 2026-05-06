@@ -1,3 +1,5 @@
 const app = require("../src/index");
 
-module.exports = app;
+module.exports = async (req, res) => {
+  return app(req, res);
+};
