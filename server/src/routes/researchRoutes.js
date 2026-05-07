@@ -1,8 +1,12 @@
 import express from "express";
-import { handleResearchRequest } from "../controllers/researchController.js";
+import {
+  handleReportAnalysisRequest,
+  handleResearchRequest
+} from "../controllers/researchController.js";
 
 const router = express.Router();
 
 router.post("/", handleResearchRequest);
+router.post("/report", handleReportAnalysisRequest);
 
 export default router;

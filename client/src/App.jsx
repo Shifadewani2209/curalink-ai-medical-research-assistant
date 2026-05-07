@@ -1,13 +1,37 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const QUICK_PROMPTS = [
-  "Deep brain stimulation for Parkinson's disease",
-  "Lung cancer immunotherapy latest evidence",
-  "Can I take Vitamin D in breast cancer?",
-  "Diabetes metformin clinical trials",
-  "Drug safety of levodopa in Parkinson's disease",
-  "Alzheimer's disease biomarker trials"
+  {
+    label: "Lung cancer",
+    query: "Lung cancer immunotherapy latest evidence",
+    icon: "□"
+  },
+  {
+    label: "Diabetes trials",
+    query: "Diabetes metformin clinical trials",
+    icon: "💉"
+  },
+  {
+    label: "Alzheimer's",
+    query: "Alzheimer's disease biomarker trials",
+    icon: "🧠"
+  },
+  {
+    label: "Heart disease",
+    query: "Heart disease latest treatment evidence",
+    icon: "❤️"
+  },
+  {
+    label: "Parkinson's DBS",
+    query: "Deep brain stimulation for Parkinson's disease",
+    icon: "🔧"
+  },
+  {
+    label: "Drug safety",
+    query: "Drug safety of levodopa in Parkinson's disease",
+    icon: "💊"
+  }
 ];
 
 function App() {
@@ -119,8 +143,14 @@ if (!isLoggedIn) {
   const [showContextBar, setShowContextBar] = useState(true);
   const [savedPatients, setSavedPatients] = useState([]);
   const [selectedPatient, setSelectedPatient] = useState("");
+  const [voiceAssistantOpen, setVoiceAssistantOpen] = useState(false);
+  const [voiceAssistantStatus, setVoiceAssistantStatus] = useState("idle");
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceReply, setVoiceReply] = useState("");
 
   const pipelineTimerRef = useRef(null);
+  const reportInputRef = useRef(null);
+  const voiceRecognitionRef = useRef(null);
 
   useEffect(() => {
     fetchSavedPatients();
@@ -153,9 +183,29 @@ if (!isLoggedIn) {
     };
   }, [allPapers, allTrials]);
 
+  const oneLineAnswer = useMemo(() => {
+    if (structuredResponse?.oneLineAnswer) {
+      return structuredResponse.oneLineAnswer;
+    }
+
+    if (structuredResponse?.researchInsights) {
+      return `Yes: I found relevant evidence. ${structuredResponse.researchInsights}`;
+    }
+
+    if (structuredResponse?.clinicalTrialSignals) {
+      return `Suggestion: Review the clinical trial signal with a clinician. ${structuredResponse.clinicalTrialSignals}`;
+    }
+
+    if (structuredResponse?.conditionOverview) {
+      return `Suggestion: Use this as research context, not medical advice. ${structuredResponse.conditionOverview}`;
+    }
+
+    return "";
+  }, [structuredResponse]);
+
   const fetchSavedPatients = async () => {
     try {
-      const res = await fetch("https://curalink-backend-rho.vercel.app/");
+      const res = await fetch("http://localhost:5000/patients");
       const data = await res.json();
       if (data.success) {
         setSavedPatients(data.patients || []);
@@ -167,7 +217,7 @@ if (!isLoggedIn) {
 
   const handleSaveContext = async () => {
   try {
-    const res = await fetch("https://curalink-backend-rho.vercel.app/patients/save", {
+    const res = await fetch("http://localhost:5000/patients/save", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -196,7 +246,7 @@ if (!isLoggedIn) {
   const loadPatientHistory = async (patientName) => {
     try {
       const res = await fetch(
-        `https://curalink-backend-rho.vercel.app/patients/${encodeURIComponent(patientName)}/history`
+        `http://localhost:5000/patients/${encodeURIComponent(patientName)}/history`
       );
       const data = await res.json();
 
@@ -302,7 +352,7 @@ if (!isLoggedIn) {
       setActiveTab("analysis");
       simulatePipeline(userMessage);
 
-      const response = await fetch("https://curalink-backend-rho.vercel.app/api/research", {
+      const response = await fetch("http://localhost:5000/research", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -327,6 +377,7 @@ if (!isLoggedIn) {
       );
 
       const assistantSummary = [
+        data.structuredResponse?.oneLineAnswer,
         data.structuredResponse?.conditionOverview,
         data.structuredResponse?.researchInsights,
         data.structuredResponse?.clinicalTrialSignals,
@@ -343,12 +394,14 @@ if (!isLoggedIn) {
 
       await fetchSavedPatients();
       setUiState("results");
+      return data;
     } catch (error) {
       stopPipeline();
       console.error("Frontend fetch error:", error);
       setResponseMessage(error.message || "Failed to fetch results");
       setStructuredResponse(null);
       setUiState("results");
+      return null;
     }
   };
 
@@ -403,6 +456,209 @@ if (!isLoggedIn) {
     }));
   };
 
+  const handleExpandedQueryClick = async (queryText) => {
+    const nextQuery = queryText.trim();
+    if (!nextQuery) return;
+
+    await runSearch(
+      {
+        sessionId,
+        patientName: patientContext.patientName,
+        disease: patientContext.disease,
+        query: nextQuery,
+        location: patientContext.location
+      },
+      nextQuery,
+      false
+    );
+  };
+
+  const speakVoiceAssistant = (text, onEnd) => {
+    if (!("speechSynthesis" in window)) {
+      onEnd?.();
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-IN";
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+    utterance.onend = () => onEnd?.();
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const closeVoiceAssistant = () => {
+    voiceRecognitionRef.current?.stop();
+    window.speechSynthesis?.cancel();
+    setVoiceAssistantOpen(false);
+    setVoiceAssistantStatus("idle");
+  };
+
+  const startVoiceListening = () => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setVoiceAssistantStatus("idle");
+      setVoiceReply("Voice assistant works best in Google Chrome.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    voiceRecognitionRef.current = recognition;
+    recognition.lang = "en-IN";
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+
+    setVoiceAssistantStatus("listening");
+
+    recognition.onresult = async (event) => {
+      const spokenText = event.results[0][0].transcript;
+      setVoiceTranscript(spokenText);
+      setVoiceAssistantStatus("thinking");
+
+      const data = await runSearch(
+        {
+          sessionId,
+          patientName: patientContext.patientName,
+          disease: patientContext.disease,
+          query: spokenText,
+          location: patientContext.location
+        },
+        spokenText,
+        false
+      );
+
+      const answer =
+        data?.structuredResponse?.oneLineAnswer ||
+        "Suggestion: I could not analyze that clearly. Please try again or contact a qualified clinician for urgent symptoms.";
+
+      setVoiceReply(answer);
+      setVoiceAssistantStatus("speaking");
+      speakVoiceAssistant(answer, () => setVoiceAssistantStatus("idle"));
+    };
+
+    recognition.onerror = (event) => {
+      console.error("Voice assistant error:", event.error);
+      const message =
+        event.error === "not-allowed"
+          ? "Microphone permission is blocked. Please allow microphone access from the browser address bar."
+          : "I could not hear that clearly. Please tap Listen and try again.";
+      setVoiceReply(message);
+      setVoiceAssistantStatus("idle");
+      speakVoiceAssistant(message);
+    };
+
+    recognition.start();
+  };
+
+  const openVoiceAssistant = () => {
+    const greeting = "Hello, I am your assistant. How are you feeling today?";
+    setVoiceAssistantOpen(true);
+    setVoiceTranscript("");
+    setVoiceReply(greeting);
+    setVoiceAssistantStatus("speaking");
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      const message = "Voice assistant needs a browser with microphone support.";
+      setVoiceReply(message);
+      setVoiceAssistantStatus("idle");
+      speakVoiceAssistant(message);
+      return;
+    }
+
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        stream.getTracks().forEach((track) => track.stop());
+        speakVoiceAssistant(greeting, startVoiceListening);
+      })
+      .catch(() => {
+        const message = "Please allow microphone permission to use voice assistant.";
+        setVoiceReply(message);
+        setVoiceAssistantStatus("idle");
+        speakVoiceAssistant(message);
+      });
+  };
+
+  const fileToBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        resolve(result.split(",")[1] || "");
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const handleReportUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setUiState("loading");
+      setActiveTab("analysis");
+      simulatePipeline(`Analyzing report: ${file.name}`);
+
+      const contentBase64 = await fileToBase64(file);
+      const response = await fetch("http://localhost:5000/research/report", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type,
+          contentBase64,
+          patientName: patientContext.patientName,
+          disease: patientContext.disease,
+          location: patientContext.location
+        })
+      });
+
+      const responseText = await response.text();
+      let data = {};
+
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error("Report analysis endpoint did not return JSON. Please restart the backend and try again.");
+      }
+      stopPipeline();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Report analysis failed");
+      }
+
+      setResponseMessage(data.message || "");
+      setSessionId(data.sessionId || "");
+      setExpandedQueries(data.expandedQueries || []);
+      setStructuredResponse(data.structuredResponse || null);
+      setUsedContext(data.usedContext || null);
+      setFinalProcessedQuery(data.finalProcessedQuery || `Uploaded report: ${file.name}`);
+      setChatHistory((prev) => [
+        ...prev,
+        { role: "user", content: `Uploaded report: ${file.name}`, kind: "report" },
+        {
+          role: "assistant",
+          content: data.structuredResponse?.oneLineAnswer || "Report analyzed."
+        }
+      ]);
+      setUiState("results");
+    } catch (error) {
+      stopPipeline();
+      console.error("Report upload error:", error);
+      setResponseMessage(error.message || "Failed to analyze report");
+      setStructuredResponse(null);
+      setUiState("results");
+    } finally {
+      event.target.value = "";
+    }
+  };
+
   const renderEmptyState = () => (
     <motion.div
       initial={{ opacity: 0, y: 18 }}
@@ -423,13 +679,21 @@ if (!isLoggedIn) {
       <div style={quickPromptGrid}>
         {QUICK_PROMPTS.map((prompt) => (
           <button
-            key={prompt}
+            key={prompt.label}
             style={quickPromptBtn}
-            onClick={() => handlePromptClick(prompt)}
+            onClick={() => handlePromptClick(prompt.query)}
           >
-            {prompt}
+            <span style={quickPromptIcon}>{prompt.icon}</span>
+            <span>{prompt.label}</span>
           </button>
         ))}
+      </div>
+      <div style={quickSourcePills}>
+        <span style={quickSourcePill}>Llama 3.3 70B</span>
+        <span style={quickSourcePill}>PubMed</span>
+        <span style={quickSourcePill}>OpenAlex</span>
+        <span style={quickSourcePill}>ClinicalTrials.gov</span>
+        <span style={quickSourcePill}>OpenFDA</span>
       </div>
     </motion.div>
   );
@@ -571,6 +835,13 @@ if (!isLoggedIn) {
                 </div>
               </div>
 
+              <div style={oneLineAnswerCard}>
+                <div style={oneLineAnswerLabel}>One-line answer</div>
+                <div style={oneLineAnswerText}>
+                  {oneLineAnswer || "No one-line answer available."}
+                </div>
+              </div>
+
               <div style={analysisPremiumGrid}>
                 <motion.div
                   initial={{ opacity: 0, y: 16 }}
@@ -623,6 +894,26 @@ if (!isLoggedIn) {
                     {structuredResponse?.safetyNote || "No content available."}
                   </div>
                 </motion.div>
+              </div>
+
+              <div style={analysisQueryCard}>
+                <div style={analysisCardTitle}>Expanded Queries</div>
+                <div style={analysisQueryList}>
+                  {(expandedQueries || []).length > 0 ? (
+                    expandedQueries.map((q) => (
+                      <button
+                        key={q}
+                        style={analysisQueryLink}
+                        onClick={() => handleExpandedQueryClick(q)}
+                        title="Search this expanded query"
+                      >
+                        {q}
+                      </button>
+                    ))
+                  ) : (
+                    <div style={emptyTabState}>No expanded queries available.</div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
@@ -752,7 +1043,13 @@ if (!isLoggedIn) {
                         style={queryFlowItem}
                       >
                         <div style={queryFlowDot} />
-                        <div style={queryFlowText}>{q}</div>
+                        <button
+                          style={queryFlowTextButton}
+                          onClick={() => handleExpandedQueryClick(q)}
+                          title="Search this expanded query"
+                        >
+                          {q}
+                        </button>
                       </motion.div>
                     ))
                   ) : (
@@ -790,7 +1087,7 @@ if (!isLoggedIn) {
                 setResponseMessage("");
               }}
             >
-              ＋ New session
+              + New session
             </button>
           </div>
 
@@ -904,6 +1201,13 @@ if (!isLoggedIn) {
           <div style={composerDock}>
             <div style={composerInner}>
               <input
+                ref={reportInputRef}
+                type="file"
+                accept=".txt,.md,.csv,.pdf,text/plain,text/markdown,text/csv,application/pdf"
+                style={{ display: "none" }}
+                onChange={handleReportUpload}
+              />
+              <input
                 value={sessionId ? followUpMessage : formData.query}
                 onChange={(e) => {
                   if (sessionId) setFollowUpMessage(e.target.value);
@@ -920,61 +1224,25 @@ if (!isLoggedIn) {
                 }}
               />
               <button
-  style={composerIconBtn}
-  title="Speak"
-  onClick={() => {
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      alert("Voice input works best in Google Chrome.");
-      return;
-    }
-
-    navigator.mediaDevices
-      .getUserMedia({ audio: true })
-      .then(() => {
-        const recognition = new SpeechRecognition();
-
-        recognition.lang = "en-IN";
-        recognition.interimResults = false;
-        recognition.continuous = false;
-        recognition.maxAlternatives = 1;
-
-        recognition.start();
-
-        recognition.onresult = (event) => {
-          const spokenText = event.results[0][0].transcript;
-
-          if (sessionId) {
-            setFollowUpMessage(spokenText);
-          } else {
-            setFormData((prev) => ({
-              ...prev,
-              query: spokenText
-            }));
-          }
-        };
-
-        recognition.onerror = (event) => {
-          console.error("Speech error:", event.error);
-
-          if (event.error === "not-allowed") {
-            alert("Microphone permission is blocked. Please allow microphone access from the browser address bar.");
-          } else if (event.error === "no-speech") {
-            alert("No speech detected. Click the mic and speak clearly after 1 second.");
-          } else {
-            alert("Voice input failed. Please try again in Google Chrome.");
-          }
-        };
-      })
-      .catch(() => {
-        alert("Please allow microphone permission to use voice input.");
-      });
-  }}
->
-  🎙️
-</button>
+                style={composerIconBtn}
+                title="Upload report"
+                onClick={() => reportInputRef.current?.click()}
+              >
+                📎
+              </button>
+              <button
+                style={composerIconBtn}
+                title="Voice assistant"
+                onClick={openVoiceAssistant}
+              >
+                <span style={voiceMicIcon} aria-hidden="true">
+                  <span style={{ ...voiceMicBar, height: "10px" }} />
+                  <span style={{ ...voiceMicBar, height: "18px" }} />
+                  <span style={{ ...voiceMicBar, height: "24px" }} />
+                  <span style={{ ...voiceMicBar, height: "14px" }} />
+                  <span style={{ ...voiceMicBar, height: "20px" }} />
+                </span>
+              </button>
               <button
                 style={composerSendBtn}
                 onClick={() => {
@@ -991,6 +1259,50 @@ if (!isLoggedIn) {
           </div>
         </main>
       </div>
+      {voiceAssistantOpen && (
+        <div style={voiceOverlay}>
+          <button style={voiceCloseBtn} onClick={closeVoiceAssistant}>
+            ×
+          </button>
+          <div style={voiceOrbWrap}>
+            <div style={voiceOrb}>
+              {Array.from({ length: 72 }).map((_, index) => (
+                <span
+                  key={index}
+                  style={{
+                    ...voiceParticle,
+                    transform: `rotate(${index * 5}deg) translate(${42 + (index % 9) * 5}px)`,
+                    opacity: voiceAssistantStatus === "listening" ? 0.95 : 0.45
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div style={voiceStatusPill}>
+            <span style={voiceStatusDot} />
+            {voiceAssistantStatus === "speaking" && "Speaking"}
+            {voiceAssistantStatus === "listening" && "Listening"}
+            {voiceAssistantStatus === "thinking" && "Thinking"}
+            {voiceAssistantStatus === "idle" && "Ready"}
+          </div>
+
+          <div style={voiceTextWrap}>
+            <div style={voiceReplyText}>{voiceReply}</div>
+            {voiceTranscript && (
+              <div style={voiceTranscriptText}>You said: {voiceTranscript}</div>
+            )}
+          </div>
+
+          <button
+            style={voiceListenBtn}
+            onClick={startVoiceListening}
+            disabled={voiceAssistantStatus === "listening" || voiceAssistantStatus === "thinking"}
+          >
+            Listen again
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1520,27 +1832,61 @@ const quickSearchTitle = {
   fontSize: "12px",
   letterSpacing: "1px",
   textTransform: "uppercase",
-  marginBottom: "10px"
+  marginBottom: "12px"
 };
 
 const quickPromptGrid = {
   display: "grid",
   gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
   gap: "10px",
-  maxWidth: "820px",
+  maxWidth: "626px",
   margin: "0 auto",
   width: "100%"
 };
 
 const quickPromptBtn = {
-  padding: "14px 16px",
-  borderRadius: "14px",
-  border: "1px solid rgba(255,255,255,0.06)",
-  background: "rgba(255,255,255,0.035)",
-  color: "#dce8ff",
+  minHeight: "66px",
+  padding: "0 20px",
+  borderRadius: "10px",
+  border: "1px solid rgba(72,105,148,0.35)",
+  background: "rgba(17,35,59,0.92)",
+  color: "#9fb0cc",
   cursor: "pointer",
   textAlign: "left",
-  fontWeight: 600
+  fontWeight: 700,
+  fontSize: "16px",
+  display: "flex",
+  alignItems: "center",
+  gap: "16px",
+  boxShadow: "inset 0 0 0 1px rgba(5,12,24,0.35)"
+};
+
+const quickPromptIcon = {
+  width: "28px",
+  flex: "0 0 28px",
+  display: "inline-grid",
+  placeItems: "center",
+  fontSize: "23px",
+  lineHeight: 1
+};
+
+const quickSourcePills = {
+  display: "flex",
+  justifyContent: "center",
+  gap: "8px",
+  flexWrap: "wrap",
+  maxWidth: "626px",
+  margin: "34px auto 0"
+};
+
+const quickSourcePill = {
+  padding: "8px 14px",
+  borderRadius: "999px",
+  background: "rgba(17,35,59,0.92)",
+  border: "1px solid rgba(72,105,148,0.28)",
+  color: "#60718d",
+  fontSize: "12px",
+  fontWeight: 700
 };
 
 const pipelineCard = {
@@ -1797,7 +2143,7 @@ const composerInner = {
   maxWidth: "980px",
   margin: "0 auto",
   display: "grid",
-  gridTemplateColumns: "1fr 48px 48px",
+  gridTemplateColumns: "1fr 48px 48px 48px",
   gap: "8px",
   alignItems: "center",
   background: "linear-gradient(180deg, rgba(11,24,52,0.96), rgba(8,19,41,0.98))",
@@ -1823,7 +2169,25 @@ const composerIconBtn = {
   border: "1px solid rgba(255,255,255,0.06)",
   background: "rgba(255,255,255,0.03)",
   color: "#9cc5ff",
-  cursor: "pointer"
+  cursor: "pointer",
+  display: "grid",
+  placeItems: "center"
+};
+
+const voiceMicIcon = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "3px",
+  width: "24px",
+  height: "24px"
+};
+
+const voiceMicBar = {
+  width: "3px",
+  borderRadius: "999px",
+  background: "#ffffff",
+  display: "block"
 };
 
 const composerSendBtn = {
@@ -1842,6 +2206,123 @@ const disclaimer = {
   color: "#6f87b6",
   fontSize: "12px",
   marginTop: "8px"
+};
+
+const voiceOverlay = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 100,
+  background: "rgba(3, 4, 10, 0.98)",
+  display: "grid",
+  placeItems: "center",
+  color: "white"
+};
+
+const voiceCloseBtn = {
+  position: "fixed",
+  top: "22px",
+  right: "24px",
+  width: "42px",
+  height: "42px",
+  borderRadius: "14px",
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(255,255,255,0.04)",
+  color: "#cfd8ea",
+  fontSize: "24px",
+  cursor: "pointer"
+};
+
+const voiceOrbWrap = {
+  position: "absolute",
+  top: "24%",
+  left: "50%",
+  transform: "translateX(-50%)",
+  width: "220px",
+  height: "220px",
+  display: "grid",
+  placeItems: "center"
+};
+
+const voiceOrb = {
+  position: "relative",
+  width: "160px",
+  height: "160px",
+  borderRadius: "999px",
+  filter: "drop-shadow(0 0 28px rgba(104, 225, 215, 0.18))"
+};
+
+const voiceParticle = {
+  position: "absolute",
+  left: "50%",
+  top: "50%",
+  width: "5px",
+  height: "5px",
+  borderRadius: "999px",
+  background: "#8ce9dd",
+  boxShadow: "0 0 10px rgba(140,233,221,0.7)",
+  transition: "opacity 0.2s ease"
+};
+
+const voiceStatusPill = {
+  position: "absolute",
+  bottom: "104px",
+  left: "50%",
+  transform: "translateX(-50%)",
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "8px 16px",
+  borderRadius: "999px",
+  border: "1px solid rgba(143, 230, 208, 0.18)",
+  background: "rgba(24, 42, 38, 0.82)",
+  color: "#bdebe1",
+  fontSize: "12px",
+  fontWeight: 800,
+  textTransform: "uppercase"
+};
+
+const voiceStatusDot = {
+  width: "7px",
+  height: "7px",
+  borderRadius: "999px",
+  background: "#9bf4df",
+  boxShadow: "0 0 12px rgba(155,244,223,0.75)"
+};
+
+const voiceTextWrap = {
+  position: "absolute",
+  bottom: "154px",
+  left: "50%",
+  transform: "translateX(-50%)",
+  width: "min(680px, calc(100vw - 48px))",
+  textAlign: "center"
+};
+
+const voiceReplyText = {
+  color: "#eef6ff",
+  fontSize: "22px",
+  lineHeight: 1.5,
+  fontWeight: 700
+};
+
+const voiceTranscriptText = {
+  color: "#8ca1c4",
+  fontSize: "15px",
+  marginTop: "14px"
+};
+
+const voiceListenBtn = {
+  position: "absolute",
+  bottom: "44px",
+  left: "50%",
+  transform: "translateX(-50%)",
+  border: "1px solid rgba(255,255,255,0.10)",
+  borderRadius: "999px",
+  background: "rgba(255,255,255,0.05)",
+  color: "#dce8ff",
+  padding: "12px 18px",
+  cursor: "pointer",
+  fontWeight: 800
 };
 
 const analysisPremiumWrap = {
@@ -1965,6 +2446,30 @@ const analysisGlassCard = {
   boxShadow: "0 12px 28px rgba(2, 8, 24, 0.22)"
 };
 
+const oneLineAnswerCard = {
+  borderRadius: "20px",
+  padding: "20px",
+  background: "linear-gradient(180deg, rgba(18,45,88,0.88), rgba(11,24,52,0.96))",
+  border: "1px solid rgba(86,183,255,0.18)",
+  boxShadow: "0 14px 32px rgba(2, 8, 24, 0.24)"
+};
+
+const oneLineAnswerLabel = {
+  color: "#7cbcff",
+  fontSize: "12px",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  fontWeight: 800,
+  marginBottom: "8px"
+};
+
+const oneLineAnswerText = {
+  color: "#eef6ff",
+  fontSize: "17px",
+  lineHeight: 1.6,
+  fontWeight: 700
+};
+
 const analysisCardIcon = {
   width: "42px",
   height: "42px",
@@ -1990,6 +2495,32 @@ const analysisCardText = {
   color: "#cfe0ff",
   lineHeight: 1.8,
   fontSize: "15px"
+};
+
+const analysisQueryCard = {
+  borderRadius: "20px",
+  padding: "20px",
+  background: "linear-gradient(180deg, rgba(17,35,73,0.84), rgba(11,24,52,0.96))",
+  border: "1px solid rgba(106,162,255,0.10)",
+  boxShadow: "0 12px 28px rgba(2, 8, 24, 0.22)"
+};
+
+const analysisQueryList = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "10px"
+};
+
+const analysisQueryLink = {
+  border: "1px solid rgba(86,183,255,0.22)",
+  borderRadius: "999px",
+  background: "rgba(86,183,255,0.10)",
+  color: "#9bd2ff",
+  cursor: "pointer",
+  padding: "9px 12px",
+  fontSize: "13px",
+  fontWeight: 700,
+  textAlign: "left"
 };
 
 const premiumAnalyticsWrap = {
@@ -2234,6 +2765,19 @@ const queryFlowText = {
   wordBreak: "break-word"
 };
 
+const queryFlowTextButton = {
+  ...queryFlowText,
+  width: "100%",
+  padding: 0,
+  border: "none",
+  background: "transparent",
+  cursor: "pointer",
+  textAlign: "left",
+  textDecoration: "underline",
+  textDecorationColor: "rgba(134,191,255,0.45)",
+  textUnderlineOffset: "3px"
+};
+
 const queryFlowEmpty = {
   color: "#87a1d2",
   fontSize: "14px"
@@ -2371,3 +2915,4 @@ const loginSwitchInactive = {
   fontWeight: 800,
   cursor: "pointer"
 };
+

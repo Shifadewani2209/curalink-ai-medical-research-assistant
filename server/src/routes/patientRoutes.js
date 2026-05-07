@@ -4,9 +4,18 @@ import Session from "../models/Session.js";
 
 const router = express.Router();
 
+const isDbConnected = () => Patient.db.readyState === 1;
+
 // Save or update patient context
 router.post("/save", async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.status(503).json({
+        success: false,
+        message: "Patient memory is unavailable because MongoDB is not connected"
+      });
+    }
+
     const { patientName, disease, location, currentMedications } = req.body;
 
     if (!patientName?.trim()) {
@@ -44,6 +53,10 @@ router.post("/save", async (req, res) => {
 // Get all saved patients
 router.get("/", async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json({ success: true, patients: [] });
+    }
+
     const patients = await Patient.find().sort({ updatedAt: -1 });
     res.json({ success: true, patients });
   } catch (error) {
@@ -55,6 +68,10 @@ router.get("/", async (req, res) => {
 // Get patient sessions and chat history
 router.get("/:patientName/history", async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json({ success: true, sessions: [] });
+    }
+
     const { patientName } = req.params;
 
     const sessions = await Session.find({ patientName })
